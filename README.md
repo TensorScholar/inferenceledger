@@ -46,7 +46,7 @@ This repo treats routing as an experiment. Every optimization needs:
 | Models | FreeModel pricing entries for `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex` |
 | API | FastAPI `/v1/inference` backed by the real provider adapter |
 | Routing | `single_model`, `rule_based`, and policy routing with reason codes |
-| Evidence | JSONL request ledger, SQLite benchmark ledger, JSON/Markdown exports |
+| Evidence | JSONL request ledger, SQLite benchmark ledger, deterministic evals, JSON/Markdown exports |
 | Gates | `ruff`, `mypy`, `pytest`, plus credential-gated provider integration test |
 
 ## Not Claimed
@@ -106,20 +106,24 @@ set -a; source .env; set +a
 
 ## Current Evidence
 
-Live FreeModel validation has confirmed provider connectivity, returned usage
-metadata, pricing-based cost calculation, and the credential-gated integration test.
+Live FreeModel validation has confirmed provider connectivity, usage metadata,
+pricing-based cost calculation, and the credential-gated integration path.
 
-The current smoke workload completed 3/3 provider calls, but only 1/3 quality checks
-passed. That is a useful result: it blocks any honest savings claim until the eval
-set is improved.
+The current smoke workload uses five deterministic JSON-contract tasks. A reviewed
+single-model baseline artifact is committed here:
+
+- [Smoke benchmark evidence](./benchmarks/reports/smoke-json-contract-gpt-5-4-mini-20260703.md)
+
+That artifact supports provider-backed smoke readiness. It does not support a cost
+savings claim because no optimized candidate run has been compared yet.
 
 ## Next Engineering Tasks
 
-1. Replace the weak smoke workload with deterministic, fair tasks.
-2. Commit reviewed benchmark artifacts with explicit limitations.
-3. Add deadline-aware fallback behavior to the router.
-4. Feed observed latency profiles back into routing decisions.
-5. Expand quality evaluation beyond exact deterministic checks.
+1. Run a same-workload baseline-versus-policy comparison and reject it unless quality holds.
+2. Add deadline-aware fallback behavior to the router.
+3. Feed observed latency profiles back into routing decisions.
+4. Expand quality evaluation beyond deterministic JSON contracts.
+5. Separate smoke evidence from broader benchmark suites.
 
 ## Docs
 

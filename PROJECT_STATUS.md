@@ -17,7 +17,7 @@ The previous status language claimed production readiness and complete infrastru
 - `/v1/inference` can execute the same OpenAI-compatible provider adapter path when `OPENAI_API_KEY` is set.
 - `scripts/run_benchmark.py run` can replay `benchmarks/workloads/smoke.jsonl`, write a JSON report, and store run data in a local SQLite ledger.
 - `scripts/run_benchmark.py compare` can compare two stored run summaries from the SQLite ledger.
-- Workload rows can declare deterministic quality validators: JSON keys, exact match, and required substrings.
+- Workload rows can declare deterministic quality validators: JSON keys, JSON field equality, exact match, and required substrings.
 - Benchmark reports include quality count, pass count, pass rate, and average deterministic score.
 - Comparisons are not marked comparable when candidate quality pass rate is below baseline.
 - Deterministic `single_model` and `rule_based` baseline routing modes are implemented for future comparisons.
@@ -30,13 +30,16 @@ The previous status language claimed production readiness and complete infrastru
 - SQLite benchmark runs store queryable provider usage rows and aggregate usage summaries by run.
 - Markdown benchmark exports include provider usage summaries with model-level cost and token breakdowns.
 - A skipped real-provider integration test can validate usage metadata, cost accounting, latency, and retry telemetry when `OPENAI_API_KEY` is set.
+- The smoke workload now uses five deterministic JSON-contract tasks across JSON contract, classification, extraction, arithmetic, and intent cases.
+- A reviewed single-model FreeModel `gpt-5.4-mini` smoke evidence artifact is committed under [benchmarks/reports/](./benchmarks/reports/).
 - GitHub Actions CI runs lint, type checking, and tests without provider calls.
 - Local `.venv` gates pass for tests, lint, typecheck, and import smoke.
 
 ## What Is Not Implemented Yet
 
+- Baseline-vs-policy comparison artifacts with candidate quality gates.
 - Deadline-aware fallback policy constraints and observed-profile adaptation.
-- Published baseline-vs-candidate savings reports with real run artifacts.
+- Published savings reports with real baseline and candidate artifacts.
 - Semantic quality evaluation beyond simple deterministic validators.
 - Eval-aware routing.
 - Async batch lane.
@@ -56,9 +59,9 @@ The previous status language claimed production readiness and complete infrastru
 ## Current Verification
 
 - `.venv/bin/python -m ruff check src tests`: passed.
-- `.venv/bin/python -m mypy src`: passed, 82 source files.
-- `.venv/bin/python -m pytest`: passed, 66 tests.
-- `.venv/bin/python scripts/run_benchmark.py ...` without `OPENAI_API_KEY`: exits before network access with a clear configuration error.
+- `.venv/bin/python -m mypy src`: passed, 83 source files.
+- `.venv/bin/python -m pytest`: passed, 85 tests, 1 skipped credential-gated provider test.
+- `.venv/bin/python scripts/run_benchmark.py run --workload benchmarks/workloads/smoke.jsonl --strategy single_model --model gpt-5.4-mini ...`: passed with 5/5 successes, 5/5 deterministic quality checks, zero retries, and real provider usage.
 
 ## Source Of Truth
 
