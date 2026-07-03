@@ -109,21 +109,24 @@ set -a; source .env; set +a
 Live FreeModel validation has confirmed provider connectivity, usage metadata,
 pricing-based cost calculation, and the credential-gated integration path.
 
-The current smoke workload uses five deterministic JSON-contract tasks. A reviewed
-single-model baseline artifact is committed here:
+The current smoke workload uses five deterministic JSON-contract tasks. Reviewed
+evidence artifacts are committed here:
 
 - [Smoke benchmark evidence](./benchmarks/reports/smoke-json-contract-gpt-5-4-mini-20260703.md)
+- [Baseline vs policy benchmark](./benchmarks/reports/baseline-vs-policy-json-contract-20260703.md)
 
-That artifact supports provider-backed smoke readiness. It does not support a cost
-savings claim because no optimized candidate run has been compared yet.
+The baseline-vs-policy artifact supports a narrow claim for the JSON-contract smoke
+suite: policy routing preserved deterministic quality and reduced measured provider
+cost versus a fixed `gpt-5.4` baseline. It does not support broad semantic quality,
+production, or generalized savings claims.
 
 ## Next Engineering Tasks
 
-1. Run a same-workload baseline-versus-policy comparison and reject it unless quality holds.
-2. Add deadline-aware fallback behavior to the router.
-3. Feed observed latency profiles back into routing decisions.
-4. Expand quality evaluation beyond deterministic JSON contracts.
-5. Separate smoke evidence from broader benchmark suites.
+1. Add deadline-aware fallback behavior to the router.
+2. Feed observed latency profiles back into routing decisions.
+3. Expand quality evaluation beyond deterministic JSON contracts.
+4. Separate smoke evidence from broader benchmark suites.
+5. Add minimum sample-size warnings to comparison reports.
 
 ## Docs
 

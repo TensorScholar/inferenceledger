@@ -32,14 +32,14 @@ The previous status language claimed production readiness and complete infrastru
 - A skipped real-provider integration test can validate usage metadata, cost accounting, latency, and retry telemetry when `OPENAI_API_KEY` is set.
 - The smoke workload now uses five deterministic JSON-contract tasks across JSON contract, classification, extraction, arithmetic, and intent cases.
 - A reviewed single-model FreeModel `gpt-5.4-mini` smoke evidence artifact is committed under [benchmarks/reports/](./benchmarks/reports/).
+- A reviewed baseline-vs-policy FreeModel comparison artifact is committed under [benchmarks/reports/](./benchmarks/reports/), with candidate quality held at 100% on the smoke workload and measured provider cost reduced from $0.00371000 to $0.00111450.
 - GitHub Actions CI runs lint, type checking, and tests without provider calls.
 - Local `.venv` gates pass for tests, lint, typecheck, and import smoke.
 
 ## What Is Not Implemented Yet
 
-- Baseline-vs-policy comparison artifacts with candidate quality gates.
 - Deadline-aware fallback policy constraints and observed-profile adaptation.
-- Published savings reports with real baseline and candidate artifacts.
+- Broader published savings reports beyond the five-request JSON-contract smoke workload.
 - Semantic quality evaluation beyond simple deterministic validators.
 - Eval-aware routing.
 - Async batch lane.
@@ -62,6 +62,7 @@ The previous status language claimed production readiness and complete infrastru
 - `.venv/bin/python -m mypy src`: passed, 83 source files.
 - `.venv/bin/python -m pytest`: passed, 85 tests, 1 skipped credential-gated provider test.
 - `.venv/bin/python scripts/run_benchmark.py run --workload benchmarks/workloads/smoke.jsonl --strategy single_model --model gpt-5.4-mini ...`: passed with 5/5 successes, 5/5 deterministic quality checks, zero retries, and real provider usage.
+- `.venv/bin/python scripts/run_benchmark.py compare --baseline-run-id baseline-json-contract-gpt-5-4-20260703 --candidate-run-id policy-json-contract-freemodel-20260703 ...`: passed with `comparable=true`, cost delta -69.96%, p95 latency delta -2907 ms, and no quality pass-rate regression.
 
 ## Source Of Truth
 
