@@ -1,23 +1,30 @@
-# LLM Inference Gateway Documentation
+# InferenceLedger Documentation
 
-This documentation set describes the target project that should replace the current scaffold.
+InferenceLedger is being consolidated around **vendor-neutral inference migration assurance**:
+reproducible economic and SLO evidence for model/provider/execution-policy changes.
 
-The intended project is a small but serious LLM inference gateway and benchmark lab:
+The existing gateway is reference infrastructure, not the product thesis.
 
-- real provider calls, not echo responses;
-- real latency and cost measurements, not invented dashboard values;
-- policy-based routing, not generic "AI orchestration" language;
-- reproducible benchmark reports suitable for GitHub and resume evidence.
+## Canonical documents
 
-## Documents
+- [00 Strategy Brief](./00_STRATEGY_BRIEF.md): current product boundary, user, commercial trigger, evidence semantics, and engineering order.
+- [05 Market and Product Decision — September 2026](./05_MARKET_AND_PRODUCT_DECISION_2026-09.md): current market challenge, competitor/substitute analysis, selected wedge, and ranked findings.
+- [06 Canonical Project Map](./06_CANONICAL_PROJECT_MAP.md): repository identity, source ownership, legacy/reconciliation state, cleanup classification, and target dependency direction.
 
-- [00 Strategy Brief](./00_STRATEGY_BRIEF.md): problem, target user, unique angle, non-goals, and success standard.
-- [01 Target Architecture](./01_TARGET_ARCHITECTURE.md): components, request contract, routing, ledger, telemetry, and failure handling.
-- [02 Implementation Roadmap](./02_IMPLEMENTATION_ROADMAP.md): phased tasks with acceptance criteria.
-- [03 Benchmark And Eval Plan](./03_BENCHMARK_AND_EVAL_PLAN.md): workloads, baselines, cost/latency/quality measurement, and report format.
-- [04 Codex Quality System](./04_CODEX_QUALITY_SYSTEM.md): how to use Codex app, AGENTS.md, skills, review loops, and hooks without turning the process into overhead.
+## Engineering documents under migration
 
-## Principle
+These documents contain useful implementation detail from the former gateway-first thesis, but
+must not override the canonical product decision above:
 
-If the project cannot prove a cost or latency claim with a command and a generated report, the claim should not exist in the README.
+- [01 Target Architecture](./01_TARGET_ARCHITECTURE.md): existing gateway/reference-executor architecture; to be revised as economic evidence ownership is implemented.
+- [02 Implementation Roadmap](./02_IMPLEMENTATION_ROADMAP.md): legacy gateway roadmap; superseded where it conflicts with `00`, `05`, or `06`.
+- [03 Benchmark And Eval Plan](./03_BENCHMARK_AND_EVAL_PLAN.md): useful benchmark/eval mechanics; must evolve to migration evidence and segment/SLO semantics.
+- [04 Codex Quality System](./04_CODEX_QUALITY_SYSTEM.md): engineering workflow guidance.
 
+## Evidence principle
+
+If a claim cannot be reconstructed from frozen inputs, actual execution/attempt evidence,
+identified pricing assumptions, quality evidence, and a generated artifact, the claim must be
+weakened or omitted.
+
+An unknown or potentially billable execution cost must never be silently represented as zero.
