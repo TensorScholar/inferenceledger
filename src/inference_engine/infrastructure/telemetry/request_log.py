@@ -320,13 +320,21 @@ def _provider_attempt_from_dict(raw: dict[str, Any]) -> ProviderAttempt:
 def _optional_int(value: object) -> int | None:
     if value is None:
         return None
-    return int(value)
+    if isinstance(value, (bool, int)):
+        return int(value)
+    if isinstance(value, (str, bytes, bytearray, float)):
+        return int(value)
+    raise TypeError(f"expected integer-compatible value, got {type(value).__name__}")
 
 
 def _optional_float(value: object) -> float | None:
     if value is None:
         return None
-    return float(value)
+    if isinstance(value, (bool, int, float)):
+        return float(value)
+    if isinstance(value, (str, bytes, bytearray)):
+        return float(value)
+    raise TypeError(f"expected float-compatible value, got {type(value).__name__}")
 
 
 def _optional_str(value: object) -> str | None:
