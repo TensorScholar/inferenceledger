@@ -25,7 +25,8 @@ class RequestTrace:
 
     `estimated_cost_usd` is `None` whenever the full executed attempt chain does not have complete
     cost evidence. In particular, a failed or retried provider call must not silently become a
-    zero-cost execution.
+    zero-cost execution. A locally rejected request with zero provider attempts may, however,
+    carry complete zero-cost evidence.
     """
 
     request_id: str
@@ -78,7 +79,7 @@ class RequestTrace:
                     "unknown provider-attempt cost requires incomplete request cost evidence"
                 )
         else:
-            ambiguous_legacy_execution = (
+            ambiguous_legacy_execution = self.provider_attempt_count > 0 and (
                 self.error_type is not None
                 or self.provider_retry_count > 0
                 or self.provider_attempt_count > 1
@@ -87,6 +88,11 @@ class RequestTrace:
                 raise ValueError(
                     "retry/failure trace without provider-attempt evidence cannot claim complete cost evidence"
                 )
+
+        if self.provider_attempt_count == 0 and self.provider_retry_count != 0:
+            raise ValueError("zero provider attempts cannot contain provider retries")
+        if self.provider_attempt_count == 0 and self.provider_attempts:
+            raise ValueError("zero provider attempts cannot contain provider-attempt evidence")
 
         if self.cost_evidence_complete and self.estimated_cost_usd is None:
             raise ValueError("complete cost evidence requires an execution cost")
@@ -283,6 +289,7 @@ def _request_trace_from_dict(raw: dict[str, Any]) -> RequestTrace:
     legacy_retry_count = int(raw.get("provider_retry_count", 0))
     legacy_ambiguous = (
         not attempts
+        and legacy_attempt_count > 0
         and (
             raw.get("error_type") is not None
             or legacy_retry_count > 0
