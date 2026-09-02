@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from uuid import uuid4
 
+import pytest
+
+from inference_engine.domain.models.execution import AttemptOutcome, CostEvidenceKind, ProviderAttempt
 from inference_engine.domain.models.response import CacheInfo, InferenceResponse, UsageMetrics
 from inference_engine.domain.models.routing import (
     ModelConfig,
@@ -18,6 +21,35 @@ from inference_engine.infrastructure.telemetry.request_log import (
 )
 
 
+def _known_attempt(*, attempt_index: int = 1, cost: float = 0.00002) -> ProviderAttempt:
+    return ProviderAttempt(
+        attempt_index=attempt_index,
+        provider="openai-compatible",
+        model="test-model",
+        outcome=AttemptOutcome.SUCCEEDED,
+        latency_ms=20,
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+        cached_tokens=0,
+        calculated_cost_usd=cost,
+        cost_evidence=CostEvidenceKind.CALCULATED_FROM_USAGE,
+        pricing_table_version="test",
+    )
+
+
+def _unknown_failed_attempt(*, attempt_index: int = 1) -> ProviderAttempt:
+    return ProviderAttempt(
+        attempt_index=attempt_index,
+        provider="openai-compatible",
+        model="test-model",
+        outcome=AttemptOutcome.FAILED,
+        latency_ms=10,
+        error_type="rate_limit",
+        status_code=429,
+    )
+
+
 def test_jsonl_request_log_round_trips_success_trace(tmp_path) -> None:
     response = InferenceResponse(
         request_id=uuid4(),
@@ -31,34 +63,99 @@ def test_jsonl_request_log_round_trips_success_trace(tmp_path) -> None:
         ),
         cache_info=CacheInfo(hit=False),
         latency_ms=123,
-        provider_attempt_count=3,
-        provider_retry_count=2,
+        provider_attempts=(_known_attempt(),),
     )
     request_log = JsonlRequestLog(tmp_path / "ledger.jsonl")
 
-    request_log.append(RequestTrace.from_response(provider="openai", response=response))
+    request_log.append(
+        RequestTrace.from_response(
+            provider="openai",
+            response=response,
+            pricing_table_version="test",
+        )
+    )
 
     traces = request_log.read_all()
     assert len(traces) == 1
-    assert traces[0].request_id == str(response.request_id)
-    assert traces[0].model == "test-model"
-    assert traces[0].estimated_cost_usd == 0.00002
-    assert traces[0].error_type is None
-    assert traces[0].provider_attempt_count == 3
-    assert traces[0].provider_retry_count == 2
+    trace = traces[0]
+    assert trace.request_id == str(response.request_id)
+    assert trace.model == "test-model"
+    assert trace.estimated_cost_usd == pytest.approx(0.00002)
+    assert trace.cost_evidence_complete is True
+    assert trace.error_type is None
+    assert trace.provider_attempt_count == 1
+    assert trace.provider_retry_count == 0
+    assert trace.provider_attempts == response.provider_attempts
 
 
-def test_jsonl_request_log_round_trips_error_trace(tmp_path) -> None:
+def test_success_after_unknown_retry_has_unknown_total_execution_cost() -> None:
+    response = InferenceResponse(
+        request_id=uuid4(),
+        text="ok",
+        model_used="test-model",
+        usage=UsageMetrics(
+            prompt_tokens=10,
+            completion_tokens=5,
+            total_tokens=15,
+            cost_usd=0.00002,
+        ),
+        cache_info=CacheInfo(hit=False),
+        latency_ms=123,
+        provider_attempts=(
+            _unknown_failed_attempt(attempt_index=1),
+            _known_attempt(attempt_index=2),
+        ),
+    )
+
+    trace = RequestTrace.from_response(
+        provider="openai",
+        response=response,
+        pricing_table_version="test",
+    )
+
+    assert trace.provider_attempt_count == 2
+    assert trace.provider_retry_count == 1
+    assert trace.estimated_cost_usd is None
+    assert trace.cost_evidence_complete is False
+
+
+def test_legacy_multi_attempt_response_without_attempt_details_is_incomplete() -> None:
+    response = InferenceResponse(
+        request_id=uuid4(),
+        text="ok",
+        model_used="test-model",
+        usage=UsageMetrics(
+            prompt_tokens=10,
+            completion_tokens=5,
+            total_tokens=15,
+            cost_usd=0.00002,
+        ),
+        cache_info=CacheInfo(hit=False),
+        latency_ms=123,
+        provider_attempt_count=2,
+        provider_retry_count=1,
+    )
+
+    trace = RequestTrace.from_response(provider="openai", response=response)
+
+    assert trace.estimated_cost_usd is None
+    assert trace.cost_evidence_complete is False
+
+
+def test_jsonl_request_log_round_trips_error_trace_as_unknown_cost(tmp_path) -> None:
     request_id = uuid4()
     request_log = JsonlRequestLog(tmp_path / "ledger.jsonl")
+    attempts = (
+        _unknown_failed_attempt(attempt_index=1),
+        _unknown_failed_attempt(attempt_index=2),
+    )
     error = ProviderError(
         ProviderErrorType.RATE_LIMIT,
         "rate limited",
         provider="openai-compatible",
         retryable=True,
         status_code=429,
-        provider_attempt_count=2,
-        provider_retry_count=1,
+        provider_attempts=attempts,
     )
 
     request_log.append(
@@ -73,12 +170,56 @@ def test_jsonl_request_log_round_trips_error_trace(tmp_path) -> None:
 
     traces = request_log.read_all()
     assert len(traces) == 1
-    assert traces[0].request_id == str(request_id)
-    assert traces[0].latency_ms == 42
-    assert traces[0].error_type == "rate_limit"
-    assert traces[0].estimated_cost_usd == 0.0
-    assert traces[0].provider_attempt_count == 2
-    assert traces[0].provider_retry_count == 1
+    trace = traces[0]
+    assert trace.request_id == str(request_id)
+    assert trace.latency_ms == 42
+    assert trace.error_type == "rate_limit"
+    assert trace.estimated_cost_usd is None
+    assert trace.cost_evidence_complete is False
+    assert trace.provider_attempt_count == 2
+    assert trace.provider_retry_count == 1
+    assert trace.provider_attempts == attempts
+
+
+def test_jsonl_reader_downgrades_legacy_retry_cost_to_unknown(tmp_path) -> None:
+    ledger_path = tmp_path / "legacy.jsonl"
+    ledger_path.write_text(
+        "{" 
+        '"request_id":"request-1","provider":"openai","model":"test-model",'
+        '"latency_ms":42,"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,'
+        '"estimated_cost_usd":0.00002,"pricing_table_version":"legacy","cache_hit":false,'
+        '"error_type":null,"error_message":null,"timestamp":"2026-01-01T00:00:00+00:00",'
+        '"provider_attempt_count":2,"provider_retry_count":1}'
+        "\n",
+        encoding="utf-8",
+    )
+
+    trace = JsonlRequestLog(ledger_path).read_all()[0]
+
+    assert trace.provider_attempt_count == 2
+    assert trace.provider_retry_count == 1
+    assert trace.estimated_cost_usd is None
+    assert trace.cost_evidence_complete is False
+
+
+def test_request_trace_rejects_numeric_total_when_cost_is_incomplete() -> None:
+    with pytest.raises(ValueError, match="incomplete cost evidence"):
+        RequestTrace(
+            request_id="request-1",
+            provider="openai",
+            model="test-model",
+            latency_ms=10,
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            estimated_cost_usd=0.0,
+            pricing_table_version="test",
+            cache_hit=False,
+            error_type="rate_limit",
+            error_message="rate limited",
+            timestamp="2026-01-01T00:00:00+00:00",
+            cost_evidence_complete=False,
+        )
 
 
 def test_jsonl_route_log_round_trips_route_trace(tmp_path) -> None:
