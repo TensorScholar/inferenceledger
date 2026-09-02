@@ -4,7 +4,11 @@ from uuid import uuid4
 
 import pytest
 
-from inference_engine.domain.models.execution import AttemptOutcome, CostEvidenceKind, ProviderAttempt
+from inference_engine.domain.models.execution import (
+    AttemptOutcome,
+    CostEvidenceKind,
+    ProviderAttempt,
+)
 from inference_engine.domain.models.response import CacheInfo, InferenceResponse, UsageMetrics
 from inference_engine.domain.models.routing import (
     ModelConfig,
@@ -184,7 +188,7 @@ def test_jsonl_request_log_round_trips_error_trace_as_unknown_cost(tmp_path) -> 
 def test_jsonl_reader_downgrades_legacy_retry_cost_to_unknown(tmp_path) -> None:
     ledger_path = tmp_path / "legacy.jsonl"
     ledger_path.write_text(
-        "{" 
+        "{"
         '"request_id":"request-1","provider":"openai","model":"test-model",'
         '"latency_ms":42,"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,'
         '"estimated_cost_usd":0.00002,"pricing_table_version":"legacy","cache_hit":false,'
