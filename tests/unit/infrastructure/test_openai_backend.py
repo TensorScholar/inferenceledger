@@ -7,6 +7,7 @@ import pytest
 
 from inference_engine.domain.cost.calculator import CostCalculator
 from inference_engine.domain.cost.pricing import ModelPricing, PricingTable
+from inference_engine.domain.models.execution import AttemptOutcome, CostEvidenceKind
 from inference_engine.domain.models.request import InferenceRequest, ModelParameters
 from inference_engine.infrastructure.models import openai_backend
 from inference_engine.infrastructure.models.errors import ProviderError, ProviderErrorType
@@ -159,6 +160,14 @@ async def test_openai_backend_sends_real_chat_completion_shape() -> None:
     assert response.usage.cost_usd == pytest.approx(0.002)
     assert response.provider_attempt_count == 1
     assert response.provider_retry_count == 0
+    assert len(response.provider_attempts) == 1
+    attempt = response.provider_attempts[0]
+    assert attempt.attempt_index == 1
+    assert attempt.outcome == AttemptOutcome.SUCCEEDED
+    assert attempt.total_tokens == 1_500
+    assert attempt.calculated_cost_usd == pytest.approx(0.002)
+    assert attempt.cost_evidence == CostEvidenceKind.CALCULATED_FROM_USAGE
+    assert attempt.pricing_table_version == "test"
 
 
 @pytest.mark.asyncio
@@ -174,10 +183,16 @@ async def test_openai_backend_raises_when_usage_missing() -> None:
     with pytest.raises(ProviderError) as exc_info:
         await backend.infer(InferenceRequest(prompt="Hello"))
 
-    assert exc_info.value.error_type == ProviderErrorType.MISSING_USAGE
-    assert exc_info.value.retryable is False
-    assert exc_info.value.provider_attempt_count == 1
-    assert exc_info.value.provider_retry_count == 0
+    error = exc_info.value
+    assert error.error_type == ProviderErrorType.MISSING_USAGE
+    assert error.retryable is False
+    assert error.provider_attempt_count == 1
+    assert error.provider_retry_count == 0
+    assert len(error.provider_attempts) == 1
+    assert error.provider_attempts[0].outcome == AttemptOutcome.SUCCEEDED
+    assert error.provider_attempts[0].error_type == "missing_usage"
+    assert error.provider_attempts[0].calculated_cost_usd is None
+    assert error.provider_attempts[0].cost_evidence == CostEvidenceKind.UNKNOWN
 
 
 @pytest.mark.asyncio
@@ -199,6 +214,16 @@ async def test_openai_backend_retries_retryable_errors() -> None:
     assert len(FakeOpenAIClient.instances[0].calls) == 2
     assert response.provider_attempt_count == 2
     assert response.provider_retry_count == 1
+    assert len(response.provider_attempts) == 2
+    first, second = response.provider_attempts
+    assert first.outcome == AttemptOutcome.FAILED
+    assert first.error_type == ProviderErrorType.RATE_LIMIT.value
+    assert first.status_code == 429
+    assert first.calculated_cost_usd is None
+    assert first.cost_evidence == CostEvidenceKind.UNKNOWN
+    assert second.outcome == AttemptOutcome.SUCCEEDED
+    assert second.calculated_cost_usd == pytest.approx(0.002)
+    assert second.cost_evidence == CostEvidenceKind.CALCULATED_FROM_USAGE
 
 
 @pytest.mark.asyncio
@@ -214,10 +239,14 @@ async def test_openai_backend_does_not_retry_invalid_request() -> None:
     with pytest.raises(ProviderError) as exc_info:
         await backend.infer(InferenceRequest(prompt="Hello"))
 
-    assert exc_info.value.error_type == ProviderErrorType.INVALID_REQUEST
+    error = exc_info.value
+    assert error.error_type == ProviderErrorType.INVALID_REQUEST
     assert len(FakeOpenAIClient.instances[0].calls) == 1
-    assert exc_info.value.provider_attempt_count == 1
-    assert exc_info.value.provider_retry_count == 0
+    assert error.provider_attempt_count == 1
+    assert error.provider_retry_count == 0
+    assert len(error.provider_attempts) == 1
+    assert error.provider_attempts[0].outcome == AttemptOutcome.FAILED
+    assert error.provider_attempts[0].calculated_cost_usd is None
 
 
 @pytest.mark.asyncio
@@ -236,7 +265,11 @@ async def test_openai_backend_records_exhausted_retry_attempts() -> None:
     with pytest.raises(ProviderError) as exc_info:
         await backend.infer(InferenceRequest(prompt="Hello"))
 
-    assert exc_info.value.error_type == ProviderErrorType.RATE_LIMIT
+    error = exc_info.value
+    assert error.error_type == ProviderErrorType.RATE_LIMIT
     assert len(FakeOpenAIClient.instances[0].calls) == 2
-    assert exc_info.value.provider_attempt_count == 2
-    assert exc_info.value.provider_retry_count == 1
+    assert error.provider_attempt_count == 2
+    assert error.provider_retry_count == 1
+    assert len(error.provider_attempts) == 2
+    assert all(attempt.outcome == AttemptOutcome.FAILED for attempt in error.provider_attempts)
+    assert all(attempt.calculated_cost_usd is None for attempt in error.provider_attempts)
