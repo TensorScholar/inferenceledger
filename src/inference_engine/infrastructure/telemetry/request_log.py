@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass
+from math import isclose
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -50,9 +51,43 @@ class RequestTrace:
     provider_attempts: tuple[ProviderAttempt, ...] = ()
 
     def __post_init__(self) -> None:
+        if self.provider_attempt_count < 0 or self.provider_retry_count < 0:
+            raise ValueError("provider attempt counts must be non-negative")
+
         if self.provider_attempts:
-            object.__setattr__(self, "provider_attempt_count", len(self.provider_attempts))
-            object.__setattr__(self, "provider_retry_count", max(len(self.provider_attempts) - 1, 0))
+            attempt_count = len(self.provider_attempts)
+            retry_count = max(attempt_count - 1, 0)
+            object.__setattr__(self, "provider_attempt_count", attempt_count)
+            object.__setattr__(self, "provider_retry_count", retry_count)
+
+            all_attempt_costs_known = all(attempt.cost_is_known for attempt in self.provider_attempts)
+            if all_attempt_costs_known:
+                expected_cost = sum(
+                    attempt.calculated_cost_usd or 0.0 for attempt in self.provider_attempts
+                )
+                if not self.cost_evidence_complete or self.estimated_cost_usd is None:
+                    raise ValueError(
+                        "complete provider-attempt cost evidence requires a total execution cost"
+                    )
+                if not isclose(self.estimated_cost_usd, expected_cost, rel_tol=1e-12, abs_tol=1e-12):
+                    raise ValueError(
+                        "request execution cost must equal the sum of known provider-attempt costs"
+                    )
+            elif self.cost_evidence_complete or self.estimated_cost_usd is not None:
+                raise ValueError(
+                    "unknown provider-attempt cost requires incomplete request cost evidence"
+                )
+        else:
+            ambiguous_legacy_execution = (
+                self.error_type is not None
+                or self.provider_retry_count > 0
+                or self.provider_attempt_count > 1
+            )
+            if ambiguous_legacy_execution and self.cost_evidence_complete:
+                raise ValueError(
+                    "retry/failure trace without provider-attempt evidence cannot claim complete cost evidence"
+                )
+
         if self.cost_evidence_complete and self.estimated_cost_usd is None:
             raise ValueError("complete cost evidence requires an execution cost")
         if not self.cost_evidence_complete and self.estimated_cost_usd is not None:
@@ -244,14 +279,21 @@ def _request_trace_from_dict(raw: dict[str, Any]) -> RequestTrace:
     attempts = tuple(_provider_attempt_from_dict(item) for item in raw_attempts)
     raw["provider_attempts"] = attempts
 
-    if "cost_evidence_complete" not in raw:
-        legacy_attempt_count = int(raw.get("provider_attempt_count", 1))
-        legacy_retry_count = int(raw.get("provider_retry_count", 0))
-        error_type = raw.get("error_type")
-        complete = error_type is None and legacy_attempt_count <= 1 and legacy_retry_count == 0
-        raw["cost_evidence_complete"] = complete
-        if not complete:
-            raw["estimated_cost_usd"] = None
+    legacy_attempt_count = int(raw.get("provider_attempt_count", 1))
+    legacy_retry_count = int(raw.get("provider_retry_count", 0))
+    legacy_ambiguous = (
+        not attempts
+        and (
+            raw.get("error_type") is not None
+            or legacy_retry_count > 0
+            or legacy_attempt_count > 1
+        )
+    )
+    if legacy_ambiguous:
+        raw["cost_evidence_complete"] = False
+        raw["estimated_cost_usd"] = None
+    elif "cost_evidence_complete" not in raw:
+        raw["cost_evidence_complete"] = True
 
     return RequestTrace(**raw)
 
