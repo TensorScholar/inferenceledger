@@ -57,10 +57,3 @@ class InferenceResponse:
     @property
     def total_cost_usd(self) -> float:
         return self.usage.cost_usd
-
-    @property
-    def cost_saved_usd(self) -> float:
-        if not self.cache_info.hit:
-            return 0.0
-        token_price = 0.002 / 1000
-        return self.cache_info.tokens_saved * token_price

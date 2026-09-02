@@ -99,7 +99,15 @@ async def test_api_inference_maps_provider_errors(monkeypatch: pytest.MonkeyPatc
     assert exc_info.value.detail["provider_retry_count"] == 1
 
 
-def test_api_app_includes_inference_route() -> None:
-    paths = set(app.openapi()["paths"])
+def test_api_app_is_narrow_reference_executor() -> None:
+    schema = app.openapi()
+    paths = set(schema["paths"])
 
+    assert schema["info"]["title"] == "InferenceLedger Reference Executor"
     assert "/v1/inference" in paths
+    assert "/v1/models" not in paths
+    assert "/v1/metrics/summary" not in paths
+    assert "/v1/metrics/cache" not in paths
+    assert "/v1/metrics/cost" not in paths
+    assert "/v1/cache/stats" not in paths
+    assert "/v1/cache" not in paths
