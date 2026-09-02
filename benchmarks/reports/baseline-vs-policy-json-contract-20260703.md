@@ -5,9 +5,10 @@
 Partially defensible.
 
 The policy run is comparable to the fixed-model baseline for this five-request
-JSON-contract smoke workload. It reduced measured provider cost while preserving
-deterministic quality pass rate. The result is not broad evidence of semantic quality
-parity or production readiness.
+JSON-contract smoke workload under the benchmark's original comparability rules. It reduced
+**calculated execution cost from provider-reported usage and the repository pricing table** while
+preserving deterministic quality pass rate. The result is not provider billing proof, broad
+evidence of semantic quality parity, retry/fallback economics, or production readiness.
 
 ## Configuration
 
@@ -31,7 +32,7 @@ c87a143808dc950f7cc229b0806c4ecfd9ee70b5ce0c568a0f5c73dc60c3b520
 
 | Metric | Baseline | Candidate | Delta |
 | --- | ---: | ---: | ---: |
-| Cost | $0.00371000 | $0.00111450 | -$0.00259550 |
+| Calculated cost | $0.00371000 | $0.00111450 | -$0.00259550 |
 | Cost delta | n/a | n/a | -69.96% |
 | Latency p50 | 2976 ms | 2579 ms | -397 ms |
 | Latency p95 | 11588 ms | 8681 ms | -2907 ms |
@@ -41,6 +42,10 @@ c87a143808dc950f7cc229b0806c4ecfd9ee70b5ce0c568a0f5c73dc60c3b520
 | Provider retries | 0 | 0 | 0 |
 
 The candidate selected `gpt-5.4-mini` for all five requests.
+
+The cost values above were calculated from provider-reported token usage using the repository
+pricing table active for these runs. They are not a provider invoice or authoritative
+provider-reported charge.
 
 ## Reproduction Commands
 
@@ -81,15 +86,22 @@ set -a; source .env; set +a
 
 - The workload has only five requests.
 - Quality is deterministic JSON-contract quality, not broad semantic quality.
-- The policy quality floor is heuristic; actual quality is enforced after execution by the benchmark comparison gate.
+- The policy quality floor is heuristic; actual quality is enforced after execution by the
+  benchmark comparison gate.
 - Latency p95 is reported for transparency but is not statistically strong at this sample size.
 - The result uses one provider endpoint and one run per strategy.
+- Both runs recorded zero provider retries, so this artifact contains no evidence about retry or
+  fallback economics.
+- The current request-level ledger cannot reconstruct individual provider attempts or authoritative
+  billing for failed attempts.
 
 ## Acceptable Claim
 
-For the committed JSON-contract smoke workload, the policy strategy produced a
-comparable run with no quality regression and lower measured provider cost than a
-fixed `gpt-5.4` baseline.
+For the committed five-request JSON-contract smoke workload, the policy strategy produced a run
+that met the original benchmark's narrow comparability rule, had no deterministic quality
+pass-rate regression, and had lower **calculated cost from observed provider usage under the
+repository pricing table** than the fixed `gpt-5.4` baseline.
 
-Do not generalize this result to broad workloads, production traffic, or semantic
-quality parity.
+Do not generalize this result to provider billing, retry/fallback economics, broad workloads,
+production traffic, semantic quality parity, cross-provider migration, or the current commercial
+product thesis.
