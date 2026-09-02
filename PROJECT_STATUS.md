@@ -1,75 +1,84 @@
 # Project Status
 
-## Current State
+Status date: 2026-09-03
 
-This repository has completed **Phase 0: repo repair and truth reset** and now has the first concrete Phase 1 implementation slices.
+## Current state
 
-The previous status language claimed production readiness and complete infrastructure. That is no longer treated as accurate. The project is being narrowed into an honest SLO-aware LLM inference gateway and benchmark lab.
+InferenceLedger has completed a new GitHub forensic and market truth reset.
 
-## What Is True Now
+The previous active thesis — an SLO-aware LLM gateway and benchmark lab — is no longer the
+canonical product direction. Current market evidence shows that generic routing, gateway
+abstraction, retries/fallbacks, cost observability, model experiments, and CI regression gates are
+already materially covered by existing platforms.
 
-- The strategy, architecture, roadmap, benchmark plan, and Codex quality workflow are documented under [docs/](./docs/README.md).
-- Early domain primitives for batching, caching, routing, and cost calculation are importable.
-- OpenAI-compatible provider execution is implemented with bounded retries, timeout configuration, cancellation propagation, normalized provider errors, and usage extraction.
-- Cost accounting uses a versioned model pricing table, including confirmed FreeModel model IDs, and fails on unknown pricing instead of inventing a value.
-- Request traces can be appended to a local JSONL ledger.
-- `inference-smoke` can make one real provider call when `OPENAI_API_KEY` is set.
-- `/v1/inference` can execute the same OpenAI-compatible provider adapter path when `OPENAI_API_KEY` is set.
-- `scripts/run_benchmark.py run` can replay `benchmarks/workloads/smoke.jsonl`, write a JSON report, and store run data in a local SQLite ledger.
-- `scripts/run_benchmark.py compare` can compare two stored run summaries from the SQLite ledger.
-- Workload rows can declare deterministic quality validators: JSON keys, JSON field equality, exact match, and required substrings.
-- Benchmark reports include quality count, pass count, pass rate, and average deterministic score.
-- Comparisons are not marked comparable when candidate quality pass rate is below baseline.
-- Deterministic `single_model` and `rule_based` baseline routing modes are implemented for future comparisons.
-- Benchmark runs record route decisions in JSONL and SQLite, including model choice, reason, considered/fallback models, estimated latency, and estimated cost.
-- Benchmark runs can enforce `--max-estimated-cost-usd` before provider execution; budget violations are recorded without charging provider calls.
-- `scripts/run_benchmark.py export` can export a stored run as JSON and Markdown evidence.
-- Benchmark reports include model distribution, route reason distribution, and observed p50/p95 latency by model.
-- Deterministic `policy` routing is available for benchmark runs with explicit cost budget, latency SLO, quality floor, and auditable reason codes.
-- Provider attempt and retry counts are recorded on responses, request traces, and benchmark summaries.
-- SQLite benchmark runs store queryable provider usage rows and aggregate usage summaries by run.
-- Markdown benchmark exports include provider usage summaries with model-level cost and token breakdowns.
-- A skipped real-provider integration test can validate usage metadata, cost accounting, latency, and retry telemetry when `OPENAI_API_KEY` is set.
-- The smoke workload now uses five deterministic JSON-contract tasks across JSON contract, classification, extraction, arithmetic, and intent cases.
-- A reviewed single-model FreeModel `gpt-5.4-mini` smoke evidence artifact is committed under [benchmarks/reports/](./benchmarks/reports/).
-- A reviewed baseline-vs-policy FreeModel comparison artifact is committed under [benchmarks/reports/](./benchmarks/reports/), with candidate quality held at 100% on the smoke workload and measured provider cost reduced from $0.00371000 to $0.00111450.
-- GitHub Actions CI runs lint, type checking, and tests without provider calls.
-- Local `.venv` gates pass for tests, lint, typecheck, and import smoke.
+The current product hypothesis is **vendor-neutral inference migration assurance**: reproducible
+economic and SLO evidence for changes to model/provider/execution policy, complementary to existing
+gateways, routers, observability systems, evaluation platforms, and FinOps systems.
 
-## What Is Not Implemented Yet
+This hypothesis is not customer validated.
 
-- Deadline-aware fallback policy constraints and observed-profile adaptation.
-- Broader published savings reports beyond the five-request JSON-contract smoke workload.
-- Semantic quality evaluation beyond simple deterministic validators.
-- Eval-aware routing.
-- Async batch lane.
-- Prompt cache advisor.
-- Local vLLM lane.
-- Production deployment.
+## Proven on GitHub
 
-## Phase 0 Acceptance Criteria
+- `src/inference_engine` is the only full source tree on current `main`; the top-level
+  `inference_engine/__init__.py` is a small development import shim, not a duplicate
+  implementation tree.
+- GitHub CI exists and the audited `main` commit `e3eadc34a84d334bcd99132468e892344f8092dd`
+  had a successful CI run.
+- Historical July 2026 benchmark artifacts exist for a five-request deterministic JSON-contract
+  workload and record zero provider retries in the compared runs.
 
-- `python -c "import inference_engine"` succeeds. Done.
-- `.venv/bin/python -m pytest` collects and runs the current tests. Done.
-- `.venv/bin/python -m ruff check src tests` passes. Done.
-- `.venv/bin/python -m mypy src` passes. Done.
-- Public documentation no longer claims unsupported production readiness. Done.
-- Tooling configuration exists for strict lint/type/test checks. Done.
+## Current P0 correctness gaps
 
-## Current Verification
+Before the repository can support the new thesis, these are release-blocking evidence defects:
 
-- `.venv/bin/python -m ruff check src tests`: passed.
-- `.venv/bin/python -m mypy src`: passed, 83 source files.
-- `.venv/bin/python -m pytest`: passed, 85 tests, 1 skipped credential-gated provider test.
-- `.venv/bin/python scripts/run_benchmark.py run --workload benchmarks/workloads/smoke.jsonl --strategy single_model --model gpt-5.4-mini ...`: passed with 5/5 successes, 5/5 deterministic quality checks, zero retries, and real provider usage.
-- `.venv/bin/python scripts/run_benchmark.py compare --baseline-run-id baseline-json-contract-gpt-5-4-20260703 --candidate-run-id policy-json-contract-freemodel-20260703 ...`: passed with `comparable=true`, cost delta -69.96%, p95 latency delta -2907 ms, and no quality pass-rate regression.
+1. provider retries/fallbacks are represented as counts on a request trace rather than durable
+   attempt records;
+2. failed request traces currently encode zero usage and zero cost;
+3. benchmark aggregate cost is calculated from successful traces only;
+4. pricing is keyed by model plus a global table version and lacks provider/SKU/effective-period
+   provenance sufficient for reproducible cross-provider migration claims.
 
-## Source Of Truth
+Unknown or potentially billable execution cost must not be represented as zero.
 
-Use these documents for future work:
+## Current P1 product/architecture gaps
 
-- [Strategy Brief](./docs/00_STRATEGY_BRIEF.md)
-- [Target Architecture](./docs/01_TARGET_ARCHITECTURE.md)
-- [Implementation Roadmap](./docs/02_IMPLEMENTATION_ROADMAP.md)
-- [Benchmark And Eval Plan](./docs/03_BENCHMARK_AND_EVAL_PLAN.md)
-- [Codex Quality System](./docs/04_CODEX_QUALITY_SYSTEM.md)
+- distribution/product/CLI identity remains inconsistent (`InferenceLedger` repository versus
+  `cost-optimized-inference`, `inference_engine`, and `inference-smoke`);
+- benchmark comparison currently requires baseline and candidate to use the same provider;
+- workload tags are not used for segment-level comparison;
+- evidence classes such as observed execution, controlled replay, shadow execution, and estimated
+  counterfactual are not encoded;
+- `scripts/run_benchmark.py` owns too much orchestration directly;
+- gateway-era routing/batching/caching/fallback abstractions require use/deletion audit.
+
+## Historical evidence classification
+
+The July 2026 smoke benchmark is retained as **PROSPECTIVELY OBSERVED engineering evidence for a
+narrow reference benchmark run**, not as commercial validation.
+
+Its cost field is a calculation from provider-reported usage and the repository pricing table. It
+is not provider invoice/billing proof. The sample is five requests, quality is deterministic
+contract validation, and the runs contained zero recorded retries.
+
+It does not validate production scale, generalized savings, cross-provider migration, retry/fallback
+economics, or customer demand.
+
+## Canonical source of truth
+
+Read in this order:
+
+1. [Strategy Brief](./docs/00_STRATEGY_BRIEF.md)
+2. [Market and Product Decision](./docs/05_MARKET_AND_PRODUCT_DECISION_2026-09.md)
+3. [Canonical Project Map](./docs/06_CANONICAL_PROJECT_MAP.md)
+4. [Documentation Index](./docs/README.md)
+
+Older gateway-oriented architecture/roadmap documents remain useful implementation references only
+where they do not conflict with these documents.
+
+## Next engineering bottleneck
+
+Implement the minimum durable execution-attempt and cost-evidence model needed to stop treating
+failed or retried execution economics as request-level zero-cost metadata.
+
+Do not add routing features, providers, dashboards, or infrastructure before this evidence boundary
+is correct.
