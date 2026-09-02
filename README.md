@@ -1,62 +1,110 @@
-# Cost-Optimized Inference
+# InferenceLedger
 
-![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
-![FastAPI](https://img.shields.io/badge/FastAPI-API-009688?logo=fastapi&logoColor=white)
-![SQLite](https://img.shields.io/badge/SQLite-ledger-003B57?logo=sqlite&logoColor=white)
+InferenceLedger is an engineering project for **vendor-neutral inference migration assurance**.
 
-A small LLM inference gateway for proving whether a routing policy actually improves
-cost, latency, or quality.
+Its target question is not "which model is cheapest?" and it is not intended to become another
+generic LLM gateway.
 
-The project is intentionally narrow: send real provider requests, capture usage,
-route with explainable policies, and export evidence that can be reproduced.
+Instead:
 
-```mermaid
-flowchart LR
-    W["Workload"] --> R{"Router"}
-    R -->|"baseline"| B["Fixed model"]
-    R -->|"policy"| P["Selected model"]
-    B --> A["Provider adapter"]
-    P --> A
-    A --> T["Trace: latency, tokens, cost, errors"]
-    T --> L[("SQLite + JSONL ledger")]
-    L --> E["Evidence report"]
-    E --> Q{"Claim allowed?"}
-    Q -->|"quality fails"| N["No savings claim"]
-    Q -->|"baseline beaten"| C["Publish result"]
-```
+> Before an AI platform team changes a model, provider, routing policy, fallback chain, pricing
+> assumption, or execution mode, can it produce reproducible evidence that the change is
+> economically and operationally acceptable for its workload?
 
-## Why This Exists
+## Strategic status
 
-Most LLM routing demos make the answer look obvious: cheaper model, lower cost,
-same quality. That is usually not proven.
+The previous product thesis was an SLO-aware LLM gateway and benchmark lab. Current market review
+found that routing, retries/fallbacks, spend controls, observability, canary rollout, experiments,
+and generic regression gates are already well served by gateways, cloud routers, and evaluation
+platforms.
 
-This repo treats routing as an experiment. Every optimization needs:
+The repository is therefore being consolidated around a narrower wedge:
 
-- a baseline;
-- real provider usage;
-- latency and retry behavior;
-- cost accounting from pricing data;
-- quality checks good enough to reject bad savings.
+**controlled migration evidence + execution-attempt economics + pricing provenance + workload SLO
+constraints + post-change revalidation.**
 
-## Implemented
+This direction is **not yet customer validated** and should not be described as commercially proven.
 
-| Area | Current state |
-| --- | --- |
-| Provider path | OpenAI-compatible live calls with timeout, retry, cancellation, and normalized errors |
-| Models | FreeModel pricing entries for `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex` |
-| API | FastAPI `/v1/inference` backed by the real provider adapter |
-| Routing | `single_model`, `rule_based`, and policy routing with reason codes |
-| Evidence | JSONL request ledger, SQLite benchmark ledger, deterministic evals, JSON/Markdown exports |
-| Gates | `ruff`, `mypy`, `pytest`, plus credential-gated provider integration test |
+See:
 
-## Not Claimed
+- [Strategy Brief](./docs/00_STRATEGY_BRIEF.md)
+- [Market and Product Decision](./docs/05_MARKET_AND_PRODUCT_DECISION_2026-09.md)
+- [Canonical Project Map](./docs/06_CANONICAL_PROJECT_MAP.md)
 
-- Production readiness.
-- Cost savings without a committed benchmark report.
-- Semantic quality parity across broad tasks.
-- Large-scale infrastructure that has not been justified by local evidence.
+## What should remain from the existing system
 
-## Quick Start
+The current OpenAI-compatible execution path, routing code, benchmark harness, deterministic evals,
+SQLite/JSON evidence, and pricing code are useful only where they support the new evidence model.
+
+The gateway can remain as a **reference executor** for controlled replay and smoke tests. It is no
+longer the product boundary.
+
+## Required evidence boundary
+
+A defensible migration artifact must be able to distinguish:
+
+- observed execution;
+- controlled replay;
+- shadow execution;
+- estimated counterfactual;
+- provider-reported charge;
+- calculated cost from observed usage and an identified price record;
+- estimated cost;
+- unknown or partial billing evidence.
+
+Unknown cost must never be silently converted to zero.
+
+The target execution model is request/execution -> individual provider attempts -> outcome, so
+retry and fallback economics can be reconstructed rather than represented only by counters.
+
+## Current implementation baseline
+
+The repository currently has:
+
+- an OpenAI-compatible provider adapter with bounded retry and normalized provider errors;
+- a FastAPI `/v1/inference` reference path;
+- deterministic `single_model`, `rule_based`, and policy routing used by the benchmark harness;
+- JSONL request/route logs and a SQLite benchmark ledger;
+- deterministic workload-declared quality checks;
+- JSON/Markdown benchmark exports;
+- pricing-based cost calculation from provider usage metadata;
+- `ruff`, `mypy`, and `pytest` CI.
+
+These are engineering assets, not proof that the migration-assurance product is complete.
+
+## Current P0 correctness gaps
+
+The present ledger is still request-centric:
+
+- retry/fallback attempts are not durable first-class records;
+- failed request traces currently encode zero usage/cost;
+- aggregate benchmark cost is calculated from successful traces only;
+- pricing is model-keyed rather than provider/SKU/effective-period/provenance aware;
+- cross-provider benchmark comparison is currently rejected;
+- workload tags are not yet used for segment-level regression analysis.
+
+Until these are corrected, the repository must not claim complete failure economics or billing-grade
+migration savings.
+
+## Historical engineering evidence
+
+The committed July 2026 smoke artifacts are retained as narrow historical evidence for the old
+reference benchmark path. They used five deterministic JSON-contract tasks and one
+OpenAI-compatible endpoint.
+
+The baseline-vs-policy artifact observed 5/5 successful requests in each run, 100% deterministic
+validator pass rate, and lower **calculated cost from provider-reported usage plus the repository
+pricing table** for the candidate run. There were zero recorded provider retries in those runs.
+
+That artifact does **not** validate:
+
+- broad semantic quality;
+- production behavior;
+- cross-provider migration;
+- retry/fallback economics;
+- the new commercial product thesis.
+
+## Development baseline
 
 ```bash
 python3 -m venv .venv
@@ -64,75 +112,22 @@ python3 -m venv .venv
 make check
 ```
 
-For live calls, create `.env` locally:
+Live reference-provider calls additionally require locally configured provider credentials. Secrets
+must not be committed.
 
-```bash
-OPENAI_BASE_URL=https://api.freemodel.dev/v1
-OPENAI_API_KEY=your_key_here
-OPENAI_TEST_MODEL=gpt-5.4-mini
-```
+## Near-term engineering order
 
-`.env` is ignored by git.
+1. Introduce first-class attempt-chain evidence and explicit unknown/partial cost semantics.
+2. Make pricing records provider-aware, effective-dated, and provenance-bearing.
+3. Consolidate benchmark orchestration behind one application path.
+4. Support cross-provider and segment-aware migration comparison.
+5. Define minimal economic/SLO release criteria.
+6. Execute one frozen real migration pilot.
+7. Integrate with one existing execution stack rather than adding more gateway features.
 
-## Run A Real Smoke Call
+Broad provider support, dashboard work, Kubernetes, and generic evaluation expansion are deferred.
 
-```bash
-set -a; source .env; set +a
+## Evidence policy
 
-.venv/bin/python -m inference_engine.cli \
-  --provider openai \
-  --model gpt-5.4-mini \
-  --prompt "Reply with exactly: ok" \
-  --max-tokens 8 \
-  --temperature 0
-```
-
-## Run A Benchmark
-
-```bash
-set -a; source .env; set +a
-
-.venv/bin/python scripts/run_benchmark.py run \
-  --workload benchmarks/workloads/smoke.jsonl \
-  --strategy single_model \
-  --model gpt-5.4-mini \
-  --max-estimated-cost-usd 0.01 \
-  --run-id baseline-gpt-5-4-mini
-
-.venv/bin/python scripts/run_benchmark.py export \
-  --run-id baseline-gpt-5-4-mini \
-  --format both
-```
-
-## Current Evidence
-
-Live FreeModel validation has confirmed provider connectivity, usage metadata,
-pricing-based cost calculation, and the credential-gated integration path.
-
-The current smoke workload uses five deterministic JSON-contract tasks. Reviewed
-evidence artifacts are committed here:
-
-- [Smoke benchmark evidence](./benchmarks/reports/smoke-json-contract-gpt-5-4-mini-20260703.md)
-- [Baseline vs policy benchmark](./benchmarks/reports/baseline-vs-policy-json-contract-20260703.md)
-
-The baseline-vs-policy artifact supports a narrow claim for the JSON-contract smoke
-suite: policy routing preserved deterministic quality and reduced measured provider
-cost versus a fixed `gpt-5.4` baseline. It does not support broad semantic quality,
-production, or generalized savings claims.
-
-## Next Engineering Tasks
-
-1. Add deadline-aware fallback behavior to the router.
-2. Feed observed latency profiles back into routing decisions.
-3. Expand quality evaluation beyond deterministic JSON contracts.
-4. Separate smoke evidence from broader benchmark suites.
-5. Add minimum sample-size warnings to comparison reports.
-
-## Docs
-
-- [Project Status](./PROJECT_STATUS.md)
-- [Strategy Brief](./docs/00_STRATEGY_BRIEF.md)
-- [Target Architecture](./docs/01_TARGET_ARCHITECTURE.md)
-- [Implementation Roadmap](./docs/02_IMPLEMENTATION_ROADMAP.md)
-- [Benchmark And Eval Plan](./docs/03_BENCHMARK_AND_EVAL_PLAN.md)
-- [Codex Quality System](./docs/04_CODEX_QUALITY_SYSTEM.md)
+Never fabricate or imply production/customer validation. Use explicit evidence classes and scope
+claims to what was actually executed and preserved.
