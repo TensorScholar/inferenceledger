@@ -37,7 +37,8 @@ class BenchmarkReport:
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
-    estimated_cost_usd: float
+    estimated_cost_usd: float | None
+    cost_evidence_complete: bool
     provider_attempt_count: int
     provider_retry_count: int
     route_count: int
@@ -62,9 +63,9 @@ class BenchmarkComparison:
     workload_path: str
     baseline_strategy: str
     candidate_strategy: str
-    baseline_cost_usd: float
-    candidate_cost_usd: float
-    cost_delta_usd: float
+    baseline_cost_usd: float | None
+    candidate_cost_usd: float | None
+    cost_delta_usd: float | None
     cost_delta_percent: float | None
     baseline_latency_p95_ms: int
     candidate_latency_p95_ms: int
@@ -74,6 +75,7 @@ class BenchmarkComparison:
     baseline_quality_pass_rate: float | None
     candidate_quality_pass_rate: float | None
     quality_pass_rate_delta: float | None
+    cost_evidence_complete: bool
     comparable: bool
     limitations: list[str]
 
@@ -123,6 +125,22 @@ def summarize_traces(
     quality_pass_count = sum(1 for trace in quality_traces if trace.quality_passed)
     request_count = len(traces)
     failure_count = request_count - len(success_traces)
+    cost_evidence_complete = all(
+        trace.cost_evidence_complete and trace.estimated_cost_usd is not None for trace in traces
+    )
+    estimated_cost_usd = (
+        sum(trace.estimated_cost_usd or 0.0 for trace in traces) if cost_evidence_complete else None
+    )
+    limitations = [
+        "Known cost is calculated from observed provider usage and the repository pricing table; it is not provider invoice proof.",
+        "Quality scoring is deterministic and limited to workload-declared validators.",
+        "Do not claim savings unless comparison quality remains acceptable.",
+    ]
+    if not cost_evidence_complete:
+        limitations.append(
+            "At least one executed provider attempt has unknown cost; aggregate execution cost and savings are not defensible."
+        )
+
     return BenchmarkReport(
         workload_path=str(workload_path),
         workload_sha256=_file_sha256(workload_path),
@@ -138,7 +156,8 @@ def summarize_traces(
         prompt_tokens=sum(trace.prompt_tokens for trace in success_traces),
         completion_tokens=sum(trace.completion_tokens for trace in success_traces),
         total_tokens=sum(trace.total_tokens for trace in success_traces),
-        estimated_cost_usd=sum(trace.estimated_cost_usd for trace in success_traces),
+        estimated_cost_usd=estimated_cost_usd,
+        cost_evidence_complete=cost_evidence_complete,
         provider_attempt_count=sum(trace.provider_attempt_count for trace in traces),
         provider_retry_count=sum(trace.provider_retry_count for trace in traces),
         route_count=len(routes),
@@ -154,11 +173,7 @@ def summarize_traces(
         if quality_traces
         else None,
         ledger_path=str(ledger_path),
-        limitations=[
-            "Cost is calculated from provider usage metadata and the repository pricing table.",
-            "Quality scoring is deterministic and limited to workload-declared validators.",
-            "Do not claim savings unless comparison quality remains acceptable.",
-        ],
+        limitations=limitations,
     )
 
 
@@ -190,18 +205,29 @@ def compare_reports(
         and candidate.quality_pass_rate >= baseline.quality_pass_rate
     )
     same_workload = same_workload_path and same_workload_hash and same_request_count
+    cost_evidence_complete = (
+        baseline.cost_evidence_complete
+        and candidate.cost_evidence_complete
+        and baseline.estimated_cost_usd is not None
+        and candidate.estimated_cost_usd is not None
+    )
     comparable = (
         same_workload
         and baseline.provider == candidate.provider
         and same_quality_coverage
         and candidate_quality_ok
+        and cost_evidence_complete
     )
-    cost_delta = candidate.estimated_cost_usd - baseline.estimated_cost_usd
-    cost_delta_percent = (
-        (cost_delta / baseline.estimated_cost_usd) * 100
-        if baseline.estimated_cost_usd > 0
-        else None
-    )
+
+    cost_delta: float | None = None
+    cost_delta_percent: float | None = None
+    if cost_evidence_complete:
+        assert baseline.estimated_cost_usd is not None
+        assert candidate.estimated_cost_usd is not None
+        cost_delta = candidate.estimated_cost_usd - baseline.estimated_cost_usd
+        if baseline.estimated_cost_usd > 0:
+            cost_delta_percent = (cost_delta / baseline.estimated_cost_usd) * 100
+
     limitations = [
         "Comparison uses stored run summaries from the local SQLite ledger.",
         "Comparison requires candidate quality pass rate to meet or exceed baseline before savings are defensible.",
@@ -220,6 +246,10 @@ def compare_reports(
         limitations.append("Quality pass rate is unavailable; do not claim savings.")
     elif not candidate_quality_ok:
         limitations.append("Candidate quality pass rate is below baseline.")
+    if not cost_evidence_complete:
+        limitations.append(
+            "Baseline or candidate has incomplete provider-attempt cost evidence; do not calculate or claim savings."
+        )
 
     return BenchmarkComparison(
         baseline_run_id=baseline_run_id,
@@ -243,6 +273,7 @@ def compare_reports(
             if candidate.quality_pass_rate is not None and baseline.quality_pass_rate is not None
             else None
         ),
+        cost_evidence_complete=cost_evidence_complete,
         comparable=comparable,
         limitations=limitations,
     )
