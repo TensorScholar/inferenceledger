@@ -1,32 +1,42 @@
 # Completion Summary
 
-There is no full-project completion claim yet.
+There is no full-project completion claim.
 
-This file replaces an earlier summary that overstated the implementation as production-ready. The current goal is to rebuild the repository into a small, real, measurable LLM inference gateway.
+The repository has passed through two truth resets:
 
-## Current Milestone
+1. the earlier reset removed unsupported production-readiness claims from the inherited project;
+2. the September 2026 market/architecture audit rejected the generic gateway thesis as the
+   canonical product direction.
 
-Phase 0 baseline repair is complete:
+The current hypothesis is **vendor-neutral inference migration assurance**.
 
-- repair package metadata;
-- restore importable source structure;
-- remove unsupported production claims;
-- make tests collect and run;
-- establish strict tooling commands.
+## What completion would require
 
-Verified gates:
+A future product-completion claim requires evidence that the system can evaluate a meaningful
+inference change and preserve enough raw provenance for independent review.
 
-- `python3 -c "import inference_engine; print('ok')"`
-- `.venv/bin/python -c "import inference_engine; print('ok')"`
-- `.venv/bin/python -m pytest -q`
-- `.venv/bin/python -m ruff check src tests`
-- `.venv/bin/python -m mypy src`
+At minimum, a defensible milestone must demonstrate:
 
-## Definition Of A Future Completion Claim
+- frozen representative workload inputs;
+- actual baseline and candidate execution, or explicit non-observed/counterfactual labeling;
+- durable provider-attempt chains for retries/fallbacks;
+- explicit unknown/partial billing semantics;
+- reproducible provider/model price records with provenance;
+- cost, latency, reliability, and workload-segment evidence;
+- quality evidence sufficient to protect the economic claim without becoming a general eval
+  platform;
+- deterministic acceptance criteria where justified;
+- a generated evidence artifact that can be reconstructed from preserved inputs and execution
+  records;
+- relevant lint/type/test/release checks;
+- no contradictory package/product identity;
+- no unreviewed legacy execution path that can change the result.
 
-A future completion summary can only claim a phase is done when:
+Customer validation, production readiness, partnership interest, generalized savings, and
+commercial readiness must remain unclaimed until separately demonstrated.
 
-- the acceptance criteria in [docs/02_IMPLEMENTATION_ROADMAP.md](./docs/02_IMPLEMENTATION_ROADMAP.md) are met;
-- tests and relevant checks pass;
-- docs match implemented behavior;
-- any cost, latency, or quality claim is backed by a reproducible command and generated report.
+## Current blocker
+
+The next blocker is the request-centric economic ledger: retries/fallbacks are not first-class
+attempt records and failed requests currently become zero-cost traces. That evidence model must be
+corrected before broader migration-economics claims are allowed.

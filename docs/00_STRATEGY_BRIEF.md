@@ -1,122 +1,194 @@
-# Strategy Brief: Honest SLO-Aware LLM Inference Gateway
+# Strategy Brief: InferenceLedger
 
-## One-Line Positioning
+## One-line positioning
 
-Build a small, real LLM inference gateway that chooses the cheapest acceptable execution path for each request while preserving latency SLOs and measured answer quality.
+InferenceLedger is a vendor-neutral **inference migration assurance** system: it produces
+reproducible economic and SLO evidence for model, provider, routing, fallback, pricing, and
+execution-policy changes without requiring teams to replace their existing gateway or evaluation
+stack.
 
-## Why This Is Worth Building
+## Core decision
 
-Many engineering teams now have LLM usage in production but weak control over:
+The repository should no longer treat "an SLO-aware LLM gateway that routes to cheaper models"
+as the product.
 
-- model selection;
-- token spend;
-- retry cost;
-- tail latency;
-- prompt cacheability;
-- async versus synchronous execution;
-- quality loss when using cheaper models;
-- observability across providers.
+Gateways, routers, observability platforms, and evaluation systems already solve large portions of
+provider abstraction, routing, retries/fallbacks, cost telemetry, experiments, and regression
+gating. InferenceLedger should use those systems where possible rather than duplicate them.
 
-A strong portfolio project should solve this narrow problem end to end. It should not pretend to be a full ML platform. It should show senior judgment: measurable tradeoffs, careful failure behavior, small architecture, and honest evidence.
+The product question is narrower:
 
-## Target User
+> For our workload, is this inference execution change economically and operationally safe enough
+> to ship, and can another engineer reconstruct the claim from the evidence?
 
-The target user is a backend or platform engineer who owns an application that calls LLM providers and needs to answer:
+See [Market Challenge and Product Decision](./05_MARKET_AND_PRODUCT_DECISION_2026-09.md) for the
+market challenge that produced this decision.
 
-- Which model should serve this request?
-- Is this request urgent, or can it use a cheaper async path?
-- Did routing save money without breaking quality?
-- Which features, users, or endpoints drive cost?
-- What happens when a provider times out, rate limits, or returns partial failure?
+## Target user
 
-## Unique Angle
+Primary user:
 
-Most demo projects show routing logic without proof. This project should be different:
+- AI platform / LLM infrastructure engineer making model/provider/execution changes.
 
-1. It has a gateway that executes real requests.
-2. It has a ledger that stores actual usage, latency, and route decisions.
-3. It has a benchmark runner that compares a baseline against optimized strategies.
-4. It has an eval harness that detects quality degradation.
-5. It has documentation that refuses unsupported claims.
+Adjacent users:
 
-## Market And Technology Anchors
+- SRE/platform engineer responsible for inference latency and reliability;
+- AI FinOps engineer responsible for inference unit economics.
 
-The project should align with current LLM infrastructure trends:
+## Economic buyer and trigger
 
-- Provider batch APIs for cheaper offline work: OpenAI Batch API, https://platform.openai.com/docs/guides/batch
-- Prompt caching and cache-aware prompt design: OpenAI prompt caching, https://platform.openai.com/docs/guides/prompt-caching
-- Anthropic prompt caching for repeated context: https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
-- Prefix/KV cache reuse in local serving: vLLM automatic prefix caching, https://docs.vllm.ai/en/latest/features/automatic_prefix_caching/
-- Standardized GenAI observability: OpenTelemetry semantic conventions, https://opentelemetry.io/docs/specs/semconv/gen-ai/
-- Distributed inference systems focus on scheduling, routing, cache, and SLOs, not vague orchestration: NVIDIA Dynamo, https://developer.nvidia.com/dynamo
+Likely economic buyer:
 
-These are not features to copy blindly. They are signals about what serious companies care about: cost, latency, cache reuse, quality, routing, and operational evidence.
+- AI/ML platform, infrastructure, or FinOps leadership in an organization with material inference
+  spend or migration risk.
 
-## Core Product Shape
+High-value triggering events:
 
-The system exposes an OpenAI-like HTTP interface and adds policy fields:
+- model or provider deprecation;
+- forced model-version migration;
+- material spend-reduction mandate;
+- provider price/contract change;
+- gateway/router migration;
+- retry/fallback policy change after a reliability incident;
+- hosted <-> self-hosted migration;
+- moving a defined workload segment to a cheaper model/provider.
 
-```json
-{
-  "messages": [{"role": "user", "content": "Summarize this incident report"}],
-  "policy": {
-    "latency_slo_ms": 1500,
-    "max_cost_usd": 0.02,
-    "quality_tier": "standard",
-    "allow_async": true,
-    "allow_fallback": true,
-    "cache_mode": "read_write"
-  },
-  "metadata": {
-    "user_id": "u_123",
-    "feature": "incident_summary",
-    "experiment": "router_v1"
-  }
-}
+## Product boundary
+
+InferenceLedger owns:
+
+- execution-attempt economics;
+- model/provider/policy migration evidence;
+- pricing provenance needed to reproduce cost claims;
+- latency/reliability acceptance constraints;
+- workload-segment economic/SLO regression evidence;
+- pre-deployment economic release evidence;
+- post-change economic/SLO drift and revalidation.
+
+InferenceLedger does not own:
+
+- generic provider proxying as a product wedge;
+- generalized model routing;
+- generalized LLM evaluation;
+- a general observability dashboard;
+- a general FinOps platform;
+- permission/security policy owned by other TensorScholar products.
+
+Quality remains required as a constraint on savings claims, but should normally be supplied by
+narrow deterministic checks or external evaluation evidence rather than turning InferenceLedger
+into ProofDiff or another eval platform.
+
+## Core evidence model
+
+The architecture must be able to represent:
+
+```text
+Frozen workload
+    |
+    +--> Baseline execution ----+
+    |                           |
+    +--> Candidate execution ---+--> Attempt-chain evidence
+                                    + pricing provenance
+                                    + latency/reliability
+                                    + quality evidence references
+                                    + workload segments
+                                             |
+                                             v
+                                      Change comparison
+                                             |
+                                  SHIP / REVIEW / NO-GO
+                                  only after criteria are defined
+                                             |
+                                      Canary observation
+                                             |
+                                       Revalidation
 ```
 
-The router decides:
+The release-decision vocabulary is not considered product-validated until the policy contract is
+implemented and exercised against meaningful evidence.
 
-- direct premium model;
-- cheaper model;
-- local model;
-- async batch lane;
-- cache-aware execution path;
-- fallback after failure.
+## Evidence honesty
 
-Every decision creates a ledger row.
+Distinguish:
 
-## What The GitHub Repo Should Prove
+- observed execution;
+- controlled replay;
+- shadow execution;
+- estimated counterfactual.
 
-The repo should make these claims only after evidence exists:
+An unexecuted candidate must never be described as measured.
 
-- "On workload X, strategy Y reduced measured provider cost by Z percent."
-- "p95 latency stayed under SLO for synchronous requests."
-- "Quality pass rate stayed above threshold on the eval suite."
-- "Batch lane saved money for non-urgent requests with deadline greater than N."
-- "Prompt cache advisor improved cache eligibility on repeated-prefix workloads."
+Cost must distinguish provider-reported charge, calculated cost from observed usage, estimated
+cost, and unknown/partial billing evidence.
 
-## Non-Goals
+Unknown cost is not zero cost.
 
-The project should not initially build:
+## Economic accounting direction
 
-- Kubernetes deployment;
-- multi-region control plane;
-- generalized ML workflow platform;
-- fake semantic response cache;
-- full vendor marketplace;
-- custom vector database;
-- complete web dashboard;
-- complex autoscaling;
-- organization billing product.
+A request is not the economic atomic unit when retries or fallbacks occur.
 
-Those are distractions until the measurable gateway works.
+The product needs a durable attempt model so an execution can reconstruct the whole chain:
 
-## What Makes It Resume-Strong
+```text
+request/execution
+  -> attempt 1: provider/model/status/usage/price evidence
+  -> attempt 2: retry ...
+  -> attempt 3: fallback ...
+  -> final outcome
+```
 
-A strong resume bullet after completion should look like this:
+Useful decision metrics may include total execution cost, cost per successful/accepted outcome,
+tail latency, error rate, retry attempt rate, fallback cost contribution, and segment-specific
+regressions. Each metric must be mathematically defined before it is used as a release criterion.
 
-> Built an SLO-aware LLM inference gateway that reduced measured inference cost by X percent on replayed workloads while preserving Y percent eval pass rate; implemented provider adapters, policy routing, async batch lane, prompt-cache-aware execution, cost ledger, OpenTelemetry traces, and reproducible benchmark reports.
+## Reference executor, not gateway product
 
-That is stronger than broad claims about "production-grade architecture."
+The existing OpenAI-compatible provider path can remain as:
 
+- a controlled replay executor;
+- a smoke-test path;
+- a development integration;
+- a benchmark reference adapter.
+
+It should not drive product scope. External gateways/routers are integration targets.
+
+## Integration posture
+
+Prefer adapters to infrastructure displacement.
+
+Potential targets include LiteLLM, Cloudflare AI Gateway, Portkey, Amazon Bedrock, Microsoft
+Foundry, OpenTelemetry-compatible telemetry, and external evaluation systems. Only one integration
+should be implemented initially, selected after the economic evidence model is correct.
+
+## Near-term engineering order
+
+1. Freeze the canonical product and repository map.
+2. Replace request-only cost semantics with attempt-chain evidence and explicit unknown cost.
+3. Make pricing records provider-aware, effective-dated, and provenance-bearing.
+4. Consolidate benchmark orchestration behind canonical application services.
+5. Support cross-provider baseline/candidate comparison and segment-level constraints.
+6. Define the minimal release policy contract and deterministic decision semantics.
+7. Execute one real migration pilot with frozen evidence.
+8. Add one external execution-stack integration.
+9. Compare pre-deployment evidence with canary/post-change observations.
+10. Add narrowly justified revalidation triggers.
+
+Do not expand router features, provider count, dashboard scope, or deployment infrastructure ahead
+of these items.
+
+## Success standard
+
+InferenceLedger becomes defensible only when it can produce an inspectable evidence artifact for a
+real migration question and that artifact survives adversarial review of:
+
+- what actually executed;
+- what was only estimated;
+- which attempts were charged or potentially charged;
+- which price records were used;
+- whether critical workload segments regressed;
+- whether quality evidence was sufficient;
+- whether tail latency/reliability constraints held;
+- which unknowns prevent a stronger claim;
+- whether post-change behavior remains consistent with the pre-deployment evidence.
+
+Until then, market differentiation and commercial readiness remain **NOT VALIDATED**.
