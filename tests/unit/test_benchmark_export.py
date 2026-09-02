@@ -29,8 +29,8 @@ def _trace() -> RequestTrace:
         quality_score=1.0,
         quality_reason="passed",
         eval_type="exact_match",
-        provider_attempt_count=2,
-        provider_retry_count=1,
+        provider_attempt_count=1,
+        provider_retry_count=0,
     )
 
 
@@ -103,8 +103,9 @@ def test_export_run_markdown_writes_summary(tmp_path) -> None:
             completion_tokens=5,
             total_tokens=15,
             estimated_cost_usd=0.001,
-            provider_attempt_count=2,
-            provider_retry_count=1,
+            cost_evidence_complete=True,
+            provider_attempt_count=1,
+            provider_retry_count=0,
             cost_by_model={"test-model": 0.001},
             tokens_by_model={"test-model": 15},
         ),
@@ -118,8 +119,8 @@ def test_export_run_markdown_writes_summary(tmp_path) -> None:
     assert "## Provider Usage Summary" in raw
     assert "| `test-model` | $0.00100000 |" in raw
     assert "| `test-model` | 15 |" in raw
-    assert "- Provider attempts: 2" in raw
-    assert "- Provider retries: 1" in raw
+    assert "- Provider attempts: 1" in raw
+    assert "- Provider retries: 0" in raw
     assert "## Route Decisions" in raw
     assert "## Limitations" in raw
 
