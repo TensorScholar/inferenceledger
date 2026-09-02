@@ -11,7 +11,7 @@ from ..infrastructure.telemetry.request_log import RequestTrace, RouteTrace
 from ..utils.time import utc_now
 from .harness import BenchmarkReport
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -54,6 +54,59 @@ class ProviderUsageSummary:
     tokens_by_model: dict[str, int]
 
 
+_TRACE_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS benchmark_traces (
+    run_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    latency_ms INTEGER NOT NULL,
+    prompt_tokens INTEGER NOT NULL,
+    completion_tokens INTEGER NOT NULL,
+    total_tokens INTEGER NOT NULL,
+    estimated_cost_usd REAL,
+    cost_evidence_complete INTEGER NOT NULL DEFAULT 1,
+    pricing_table_version TEXT NOT NULL,
+    cache_hit INTEGER NOT NULL,
+    error_type TEXT,
+    error_message TEXT,
+    quality_passed INTEGER,
+    quality_score REAL,
+    quality_reason TEXT,
+    eval_type TEXT,
+    provider_attempt_count INTEGER NOT NULL DEFAULT 1,
+    provider_retry_count INTEGER NOT NULL DEFAULT 0,
+    provider_attempts_json TEXT NOT NULL DEFAULT '[]',
+    timestamp TEXT NOT NULL,
+    PRIMARY KEY (run_id, request_id),
+    FOREIGN KEY (run_id) REFERENCES benchmark_runs(run_id) ON DELETE CASCADE
+)
+"""
+
+_USAGE_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS benchmark_provider_usage (
+    run_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    prompt_tokens INTEGER NOT NULL,
+    completion_tokens INTEGER NOT NULL,
+    total_tokens INTEGER NOT NULL,
+    estimated_cost_usd REAL,
+    cost_evidence_complete INTEGER NOT NULL DEFAULT 1,
+    pricing_table_version TEXT NOT NULL,
+    cache_hit INTEGER NOT NULL,
+    provider_attempt_count INTEGER NOT NULL,
+    provider_retry_count INTEGER NOT NULL,
+    provider_attempts_json TEXT NOT NULL DEFAULT '[]',
+    error_type TEXT,
+    timestamp TEXT NOT NULL,
+    PRIMARY KEY (run_id, request_id),
+    FOREIGN KEY (run_id) REFERENCES benchmark_runs(run_id) ON DELETE CASCADE
+)
+"""
+
+
 class SQLiteBenchmarkLedger:
     """Small local SQLite ledger for reproducible benchmark run comparisons."""
 
@@ -86,60 +139,41 @@ class SQLiteBenchmarkLedger:
                 )
                 """
             )
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS benchmark_traces (
-                    run_id TEXT NOT NULL,
-                    request_id TEXT NOT NULL,
-                    provider TEXT NOT NULL,
-                    model TEXT NOT NULL,
-                    latency_ms INTEGER NOT NULL,
-                    prompt_tokens INTEGER NOT NULL,
-                    completion_tokens INTEGER NOT NULL,
-                    total_tokens INTEGER NOT NULL,
-                    estimated_cost_usd REAL NOT NULL,
-                    cost_evidence_complete INTEGER NOT NULL DEFAULT 1,
-                    pricing_table_version TEXT NOT NULL,
-                    cache_hit INTEGER NOT NULL,
-                    error_type TEXT,
-                    error_message TEXT,
-                    quality_passed INTEGER,
-                    quality_score REAL,
-                    quality_reason TEXT,
-                    eval_type TEXT,
-                    provider_attempt_count INTEGER NOT NULL DEFAULT 1,
-                    provider_retry_count INTEGER NOT NULL DEFAULT 0,
-                    provider_attempts_json TEXT NOT NULL DEFAULT '[]',
-                    timestamp TEXT NOT NULL,
-                    PRIMARY KEY (run_id, request_id),
-                    FOREIGN KEY (run_id) REFERENCES benchmark_runs(run_id) ON DELETE CASCADE
-                )
-                """
+
+            connection.execute(_TRACE_TABLE_SQL)
+            _ensure_columns(
+                connection,
+                table_name="benchmark_traces",
+                columns={
+                    "quality_passed": "INTEGER",
+                    "quality_score": "REAL",
+                    "quality_reason": "TEXT",
+                    "eval_type": "TEXT",
+                    "provider_attempt_count": "INTEGER NOT NULL DEFAULT 1",
+                    "provider_retry_count": "INTEGER NOT NULL DEFAULT 0",
+                    "cost_evidence_complete": "INTEGER NOT NULL DEFAULT 1",
+                    "provider_attempts_json": "TEXT NOT NULL DEFAULT '[]'",
+                },
             )
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS benchmark_provider_usage (
-                    run_id TEXT NOT NULL,
-                    request_id TEXT NOT NULL,
-                    provider TEXT NOT NULL,
-                    model TEXT NOT NULL,
-                    prompt_tokens INTEGER NOT NULL,
-                    completion_tokens INTEGER NOT NULL,
-                    total_tokens INTEGER NOT NULL,
-                    estimated_cost_usd REAL NOT NULL,
-                    cost_evidence_complete INTEGER NOT NULL DEFAULT 1,
-                    pricing_table_version TEXT NOT NULL,
-                    cache_hit INTEGER NOT NULL,
-                    provider_attempt_count INTEGER NOT NULL,
-                    provider_retry_count INTEGER NOT NULL,
-                    provider_attempts_json TEXT NOT NULL DEFAULT '[]',
-                    error_type TEXT,
-                    timestamp TEXT NOT NULL,
-                    PRIMARY KEY (run_id, request_id),
-                    FOREIGN KEY (run_id) REFERENCES benchmark_runs(run_id) ON DELETE CASCADE
-                )
-                """
+            if _column_is_not_null(connection, "benchmark_traces", "estimated_cost_usd"):
+                _rebuild_trace_table_with_nullable_cost(connection)
+
+            connection.execute(_USAGE_TABLE_SQL)
+            _ensure_columns(
+                connection,
+                table_name="benchmark_provider_usage",
+                columns={
+                    "cost_evidence_complete": "INTEGER NOT NULL DEFAULT 1",
+                    "provider_attempts_json": "TEXT NOT NULL DEFAULT '[]'",
+                },
             )
+            if _column_is_not_null(
+                connection,
+                "benchmark_provider_usage",
+                "estimated_cost_usd",
+            ):
+                _rebuild_usage_table_with_nullable_cost(connection)
+
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS benchmark_routes (
@@ -161,28 +195,7 @@ class SQLiteBenchmarkLedger:
                 )
                 """
             )
-            _ensure_columns(
-                connection,
-                table_name="benchmark_traces",
-                columns={
-                    "quality_passed": "INTEGER",
-                    "quality_score": "REAL",
-                    "quality_reason": "TEXT",
-                    "eval_type": "TEXT",
-                    "provider_attempt_count": "INTEGER NOT NULL DEFAULT 1",
-                    "provider_retry_count": "INTEGER NOT NULL DEFAULT 0",
-                    "cost_evidence_complete": "INTEGER NOT NULL DEFAULT 1",
-                    "provider_attempts_json": "TEXT NOT NULL DEFAULT '[]'",
-                },
-            )
-            _ensure_columns(
-                connection,
-                table_name="benchmark_provider_usage",
-                columns={
-                    "cost_evidence_complete": "INTEGER NOT NULL DEFAULT 1",
-                    "provider_attempts_json": "TEXT NOT NULL DEFAULT '[]'",
-                },
-            )
+
             connection.execute(
                 """
                 INSERT OR IGNORE INTO benchmark_provider_usage (
@@ -459,16 +472,21 @@ class SQLiteBenchmarkLedger:
             self.get_report(run_id)
 
         cost_evidence_complete = all(
-            record.cost_evidence_complete and record.estimated_cost_usd is not None for record in usage
+            record.cost_evidence_complete and record.estimated_cost_usd is not None
+            for record in usage
         )
         cost_by_model: dict[str, float | None] = {}
         tokens_by_model: dict[str, int] = {}
         for record in usage:
             tokens_by_model[record.model] = tokens_by_model.get(record.model, 0) + record.total_tokens
+            if record.model not in cost_by_model:
+                cost_by_model[record.model] = 0.0
             if not record.cost_evidence_complete or record.estimated_cost_usd is None:
                 cost_by_model[record.model] = None
-            elif cost_by_model.get(record.model) is not None:
-                cost_by_model[record.model] = cost_by_model.get(record.model, 0.0) + record.estimated_cost_usd
+            elif cost_by_model[record.model] is not None:
+                known_cost = cost_by_model[record.model]
+                assert known_cost is not None
+                cost_by_model[record.model] = known_cost + record.estimated_cost_usd
 
         return ProviderUsageSummary(
             run_id=run_id,
@@ -558,7 +576,7 @@ def _trace_storage_row(run_id: str, trace: RequestTrace) -> tuple[object, ...]:
         trace.prompt_tokens,
         trace.completion_tokens,
         trace.total_tokens,
-        _storage_cost(trace.estimated_cost_usd),
+        trace.estimated_cost_usd,
         1 if trace.cost_evidence_complete else 0,
         trace.pricing_table_version,
         1 if trace.cache_hit else 0,
@@ -584,7 +602,7 @@ def _usage_storage_row(run_id: str, trace: RequestTrace) -> tuple[object, ...]:
         trace.prompt_tokens,
         trace.completion_tokens,
         trace.total_tokens,
-        _storage_cost(trace.estimated_cost_usd),
+        trace.estimated_cost_usd,
         1 if trace.cost_evidence_complete else 0,
         trace.pricing_table_version,
         1 if trace.cache_hit else 0,
@@ -606,7 +624,7 @@ def _trace_from_row(row: sqlite3.Row) -> RequestTrace:
         prompt_tokens=int(row["prompt_tokens"]),
         completion_tokens=int(row["completion_tokens"]),
         total_tokens=int(row["total_tokens"]),
-        estimated_cost_usd=float(row["estimated_cost_usd"]) if complete else None,
+        estimated_cost_usd=_known_cost_from_row(row, complete),
         cost_evidence_complete=complete,
         pricing_table_version=str(row["pricing_table_version"]),
         cache_hit=bool(row["cache_hit"]),
@@ -632,7 +650,7 @@ def _usage_from_row(row: sqlite3.Row) -> ProviderUsageRecord:
         prompt_tokens=int(row["prompt_tokens"]),
         completion_tokens=int(row["completion_tokens"]),
         total_tokens=int(row["total_tokens"]),
-        estimated_cost_usd=float(row["estimated_cost_usd"]) if complete else None,
+        estimated_cost_usd=_known_cost_from_row(row, complete),
         cost_evidence_complete=complete,
         pricing_table_version=str(row["pricing_table_version"]),
         cache_hit=bool(row["cache_hit"]),
@@ -642,6 +660,15 @@ def _usage_from_row(row: sqlite3.Row) -> ProviderUsageRecord:
         error_type=_optional_str(row["error_type"]),
         timestamp=str(row["timestamp"]),
     )
+
+
+def _known_cost_from_row(row: sqlite3.Row, complete: bool) -> float | None:
+    value = row["estimated_cost_usd"]
+    if not complete:
+        return None
+    if value is None:
+        raise ValueError("complete stored cost evidence is missing estimated_cost_usd")
+    return float(value)
 
 
 def _attempts_json(attempts: tuple[ProviderAttempt, ...]) -> str:
@@ -680,7 +707,8 @@ def _downgrade_ambiguous_legacy_costs(connection: sqlite3.Connection, table_name
     connection.execute(
         f"""
         UPDATE {table_name}
-        SET cost_evidence_complete = 0
+        SET cost_evidence_complete = 0,
+            estimated_cost_usd = NULL
         WHERE provider_attempts_json = '[]'
           AND provider_attempt_count > 0
           AND (error_type IS NOT NULL OR provider_retry_count > 0 OR provider_attempt_count > 1)
@@ -688,13 +716,122 @@ def _downgrade_ambiguous_legacy_costs(connection: sqlite3.Connection, table_name
     )
 
 
-def _storage_cost(value: float | None) -> float:
-    """Compatibility value for legacy NOT NULL SQLite columns.
+def _column_is_not_null(
+    connection: sqlite3.Connection,
+    table_name: str,
+    column_name: str,
+) -> bool:
+    rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+    for row in rows:
+        if str(row["name"]) == column_name:
+            return bool(row["notnull"])
+    raise ValueError(f"{table_name}.{column_name} does not exist")
 
-    `cost_evidence_complete` is authoritative. A stored zero with completeness=false is never
-    exposed as a known execution cost.
-    """
-    return value if value is not None else 0.0
+
+def _rebuild_trace_table_with_nullable_cost(connection: sqlite3.Connection) -> None:
+    connection.execute("ALTER TABLE benchmark_traces RENAME TO benchmark_traces_legacy_cost")
+    connection.execute(_TRACE_TABLE_SQL)
+    connection.execute(
+        """
+        INSERT INTO benchmark_traces (
+            run_id,
+            request_id,
+            provider,
+            model,
+            latency_ms,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            estimated_cost_usd,
+            cost_evidence_complete,
+            pricing_table_version,
+            cache_hit,
+            error_type,
+            error_message,
+            quality_passed,
+            quality_score,
+            quality_reason,
+            eval_type,
+            provider_attempt_count,
+            provider_retry_count,
+            provider_attempts_json,
+            timestamp
+        )
+        SELECT
+            run_id,
+            request_id,
+            provider,
+            model,
+            latency_ms,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            CASE WHEN cost_evidence_complete = 1 THEN estimated_cost_usd ELSE NULL END,
+            cost_evidence_complete,
+            pricing_table_version,
+            cache_hit,
+            error_type,
+            error_message,
+            quality_passed,
+            quality_score,
+            quality_reason,
+            eval_type,
+            provider_attempt_count,
+            provider_retry_count,
+            provider_attempts_json,
+            timestamp
+        FROM benchmark_traces_legacy_cost
+        """
+    )
+    connection.execute("DROP TABLE benchmark_traces_legacy_cost")
+
+
+def _rebuild_usage_table_with_nullable_cost(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        "ALTER TABLE benchmark_provider_usage RENAME TO benchmark_provider_usage_legacy_cost"
+    )
+    connection.execute(_USAGE_TABLE_SQL)
+    connection.execute(
+        """
+        INSERT INTO benchmark_provider_usage (
+            run_id,
+            request_id,
+            provider,
+            model,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            estimated_cost_usd,
+            cost_evidence_complete,
+            pricing_table_version,
+            cache_hit,
+            provider_attempt_count,
+            provider_retry_count,
+            provider_attempts_json,
+            error_type,
+            timestamp
+        )
+        SELECT
+            run_id,
+            request_id,
+            provider,
+            model,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            CASE WHEN cost_evidence_complete = 1 THEN estimated_cost_usd ELSE NULL END,
+            cost_evidence_complete,
+            pricing_table_version,
+            cache_hit,
+            provider_attempt_count,
+            provider_retry_count,
+            provider_attempts_json,
+            error_type,
+            timestamp
+        FROM benchmark_provider_usage_legacy_cost
+        """
+    )
+    connection.execute("DROP TABLE benchmark_provider_usage_legacy_cost")
 
 
 def _optional_bool_to_int(value: bool | None) -> int | None:
