@@ -13,12 +13,15 @@ except ImportError:
     AsyncOpenAI = None
 
 from ...domain.cost.calculator import CostCalculator
+from ...domain.models.execution import AttemptOutcome, CostEvidenceKind, ProviderAttempt
 from ...domain.models.request import InferenceRequest
 from ...domain.models.response import CacheInfo, InferenceResponse, UsageMetrics
 from .base import AbstractModelBackend
 from .errors import ProviderError, classify_openai_error, missing_usage_error
 
 logger = structlog.get_logger()
+
+_PROVIDER_NAME = "openai-compatible"
 
 
 @dataclass(frozen=True)
@@ -37,10 +40,14 @@ class RetryPolicy:
 
 @dataclass(frozen=True)
 class ProviderCallResult:
-    """Provider response plus local retry-loop telemetry."""
+    """Provider response plus every local provider invocation used to obtain it."""
 
     response: Any
-    attempt_count: int
+    attempts: tuple[ProviderAttempt, ...]
+
+    @property
+    def attempt_count(self) -> int:
+        return len(self.attempts)
 
 
 class OpenAIBackend(AbstractModelBackend):
@@ -74,7 +81,7 @@ class OpenAIBackend(AbstractModelBackend):
         return self._model_name
 
     async def infer(self, request: InferenceRequest) -> InferenceResponse:
-        """Run inference via OpenAI API."""
+        """Run inference via OpenAI API and preserve the complete local retry chain."""
         start = perf_counter()
 
         messages = request.messages or [{"role": "user", "content": request.prompt}]
@@ -85,11 +92,33 @@ class OpenAIBackend(AbstractModelBackend):
         completion = response.choices[0].message.content or ""
         usage = response.usage
         if usage is None:
+            attempts = _mark_last_attempt_error(
+                call_result.attempts,
+                error_type="missing_usage",
+            )
             raise replace(
                 missing_usage_error(self.model_name),
-                provider_attempt_count=call_result.attempt_count,
-                provider_retry_count=max(call_result.attempt_count - 1, 0),
+                provider_attempts=attempts,
             )
+
+        cached_tokens = _extract_cached_tokens(usage)
+        calculated_cost = self.cost_calculator.calculate_for_model_name(
+            model_name=self.model_name,
+            input_tokens=usage.prompt_tokens,
+            output_tokens=usage.completion_tokens,
+            cached_input_tokens=cached_tokens,
+        )
+        final_attempt = replace(
+            call_result.attempts[-1],
+            prompt_tokens=usage.prompt_tokens,
+            completion_tokens=usage.completion_tokens,
+            total_tokens=usage.total_tokens,
+            cached_tokens=cached_tokens,
+            calculated_cost_usd=calculated_cost,
+            cost_evidence=CostEvidenceKind.CALCULATED_FROM_USAGE,
+            pricing_table_version=self.cost_calculator.pricing_table.version,
+        )
+        attempts = (*call_result.attempts[:-1], final_attempt)
 
         return InferenceResponse(
             request_id=request.id,
@@ -100,19 +129,13 @@ class OpenAIBackend(AbstractModelBackend):
                 prompt_tokens=usage.prompt_tokens,
                 completion_tokens=usage.completion_tokens,
                 total_tokens=usage.total_tokens,
-                cached_tokens=_extract_cached_tokens(usage),
-                cost_usd=self.cost_calculator.calculate_for_model_name(
-                    model_name=self.model_name,
-                    input_tokens=usage.prompt_tokens,
-                    output_tokens=usage.completion_tokens,
-                    cached_input_tokens=_extract_cached_tokens(usage),
-                ),
+                cached_tokens=cached_tokens,
+                cost_usd=calculated_cost,
             ),
             cache_info=CacheInfo(hit=False),
             latency_ms=elapsed_ms,
             inference_time_ms=elapsed_ms,
-            provider_attempt_count=call_result.attempt_count,
-            provider_retry_count=max(call_result.attempt_count - 1, 0),
+            provider_attempts=attempts,
         )
 
     async def infer_batch(self, requests: list[InferenceRequest]) -> list[InferenceResponse]:
@@ -123,7 +146,11 @@ class OpenAIBackend(AbstractModelBackend):
         return results
 
     async def stream(self, request: InferenceRequest) -> AsyncIterator[str]:
-        """Stream tokens from OpenAI."""
+        """Stream tokens from OpenAI.
+
+        Streaming usage/cost evidence is not yet exposed by this reference interface, so streaming
+        must not be used to substantiate migration-cost claims.
+        """
         messages = request.messages or [{"role": "user", "content": request.prompt}]
 
         call_result = await self._create_completion(messages, request, stream=True)
@@ -154,8 +181,10 @@ class OpenAIBackend(AbstractModelBackend):
     ) -> ProviderCallResult:
         import asyncio
 
+        attempts: list[ProviderAttempt] = []
         last_error: ProviderError | None = None
-        for attempt in range(1, self.retry_policy.max_attempts + 1):
+        for attempt_index in range(1, self.retry_policy.max_attempts + 1):
+            attempt_start = perf_counter()
             try:
                 response = await self.client.chat.completions.create(
                     model=self.model_name,
@@ -168,29 +197,59 @@ class OpenAIBackend(AbstractModelBackend):
                     stop=request.parameters.stop_sequences or None,
                     stream=stream,
                 )
-                return ProviderCallResult(response=response, attempt_count=attempt)
+                attempts.append(
+                    ProviderAttempt(
+                        attempt_index=attempt_index,
+                        provider=_PROVIDER_NAME,
+                        model=self.model_name,
+                        outcome=AttemptOutcome.SUCCEEDED,
+                        latency_ms=int((perf_counter() - attempt_start) * 1000),
+                    )
+                )
+                return ProviderCallResult(response=response, attempts=tuple(attempts))
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 provider_error = classify_openai_error(exc)
+                attempts.append(
+                    ProviderAttempt(
+                        attempt_index=attempt_index,
+                        provider=_PROVIDER_NAME,
+                        model=self.model_name,
+                        outcome=AttemptOutcome.FAILED,
+                        latency_ms=int((perf_counter() - attempt_start) * 1000),
+                        error_type=provider_error.error_type.value,
+                        status_code=provider_error.status_code,
+                    )
+                )
                 provider_error = replace(
                     provider_error,
-                    provider_attempt_count=attempt,
-                    provider_retry_count=max(attempt - 1, 0),
+                    provider_attempts=tuple(attempts),
                 )
                 last_error = provider_error
-                if not provider_error.retryable or attempt >= self.retry_policy.max_attempts:
+                if not provider_error.retryable or attempt_index >= self.retry_policy.max_attempts:
                     raise provider_error from exc
-                await asyncio.sleep(self.retry_policy.backoff_seconds * attempt)
+                await asyncio.sleep(self.retry_policy.backoff_seconds * attempt_index)
 
         if last_error is not None:
             raise last_error
         raise ProviderError(
             error_type=classify_openai_error(RuntimeError("provider call failed")).error_type,
             message="Provider call failed without a captured exception",
-            provider="openai-compatible",
+            provider=_PROVIDER_NAME,
             retryable=False,
+            provider_attempts=tuple(attempts),
         )
+
+
+def _mark_last_attempt_error(
+    attempts: tuple[ProviderAttempt, ...],
+    *,
+    error_type: str,
+) -> tuple[ProviderAttempt, ...]:
+    if not attempts:
+        return attempts
+    return (*attempts[:-1], replace(attempts[-1], error_type=error_type))
 
 
 def _extract_cached_tokens(usage: Any) -> int:
