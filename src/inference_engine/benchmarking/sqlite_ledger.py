@@ -377,6 +377,21 @@ class SQLiteBenchmarkLedger:
                 "SELECT report_json FROM benchmark_runs WHERE run_id = ?",
                 (run_id,),
             ).fetchone()
+            trace_cost_state = connection.execute(
+                """
+                SELECT
+                    COUNT(*) AS trace_count,
+                    SUM(
+                        CASE
+                            WHEN cost_evidence_complete = 0 OR estimated_cost_usd IS NULL THEN 1
+                            ELSE 0
+                        END
+                    ) AS incomplete_cost_count
+                FROM benchmark_traces
+                WHERE run_id = ?
+                """,
+                (run_id,),
+            ).fetchone()
         if row is None:
             raise KeyError(f"Unknown benchmark run_id: {run_id}")
         raw = json.loads(str(row["report_json"]))
@@ -392,7 +407,25 @@ class SQLiteBenchmarkLedger:
         raw.setdefault("quality_pass_count", 0)
         raw.setdefault("quality_pass_rate", None)
         raw.setdefault("quality_score_avg", None)
-        if "cost_evidence_complete" not in raw:
+
+        trace_count = int(trace_cost_state["trace_count"]) if trace_cost_state is not None else 0
+        incomplete_cost_count = (
+            int(trace_cost_state["incomplete_cost_count"] or 0)
+            if trace_cost_state is not None
+            else 0
+        )
+        if trace_count > 0 and incomplete_cost_count > 0:
+            raw["cost_evidence_complete"] = False
+            raw["estimated_cost_usd"] = None
+            limitations = list(raw.get("limitations", []))
+            reconciliation_note = (
+                "Stored trace evidence contains unknown execution cost; historical aggregate cost "
+                "is suppressed."
+            )
+            if reconciliation_note not in limitations:
+                limitations.append(reconciliation_note)
+            raw["limitations"] = limitations
+        elif "cost_evidence_complete" not in raw:
             complete = (
                 int(raw.get("failure_count", 0)) == 0
                 and int(raw.get("provider_retry_count", 0)) == 0
@@ -849,13 +882,21 @@ def _optional_int_to_bool(value: object) -> bool | None:
 def _optional_int(value: object) -> int | None:
     if value is None:
         return None
-    return int(value)
+    if isinstance(value, (bool, int)):
+        return int(value)
+    if isinstance(value, (str, bytes, bytearray, float)):
+        return int(value)
+    raise TypeError(f"expected integer-compatible value, got {type(value).__name__}")
 
 
 def _optional_float(value: object) -> float | None:
     if value is None:
         return None
-    return float(value)
+    if isinstance(value, (bool, int, float)):
+        return float(value)
+    if isinstance(value, (str, bytes, bytearray)):
+        return float(value)
+    raise TypeError(f"expected float-compatible value, got {type(value).__name__}")
 
 
 def _optional_str(value: object) -> str | None:
