@@ -27,8 +27,10 @@ def _trace(
     error_type: str | None = None,
     provider_attempt_count: int = 1,
     provider_retry_count: int = 0,
+    cost_evidence_complete: bool | None = None,
 ) -> RequestTrace:
     failed = error_type is not None
+    complete = not failed if cost_evidence_complete is None else cost_evidence_complete
     return RequestTrace(
         request_id=request_id,
         provider="openai",
@@ -37,7 +39,8 @@ def _trace(
         prompt_tokens=0 if failed else 10,
         completion_tokens=0 if failed else 5,
         total_tokens=0 if failed else 15,
-        estimated_cost_usd=0.0 if failed else estimated_cost_usd,
+        estimated_cost_usd=estimated_cost_usd if complete else None,
+        cost_evidence_complete=complete,
         pricing_table_version="test",
         cache_hit=False,
         error_type=error_type,
@@ -88,10 +91,16 @@ def test_load_workload_rejects_invalid_eval(tmp_path) -> None:
         load_workload(workload_path)
 
 
-def test_summarize_traces_reports_latency_tokens_cost_failures_and_quality(tmp_path) -> None:
+def test_summarize_traces_blocks_cost_when_failed_attempt_cost_is_unknown(tmp_path) -> None:
     traces = [
         _trace("1", latency_ms=100, estimated_cost_usd=0.01),
-        _trace("2", latency_ms=300, error_type="rate_limit", provider_attempt_count=2, provider_retry_count=1),
+        _trace(
+            "2",
+            latency_ms=300,
+            error_type="rate_limit",
+            provider_attempt_count=2,
+            provider_retry_count=1,
+        ),
     ]
 
     report = summarize_traces(
@@ -111,7 +120,8 @@ def test_summarize_traces_reports_latency_tokens_cost_failures_and_quality(tmp_p
     assert report.latency_p95_ms == 300
     assert report.prompt_tokens == 10
     assert report.completion_tokens == 5
-    assert report.estimated_cost_usd == 0.01
+    assert report.estimated_cost_usd is None
+    assert report.cost_evidence_complete is False
     assert report.provider_attempt_count == 3
     assert report.provider_retry_count == 1
     assert report.model_distribution == {"test-model": 1}
@@ -121,6 +131,21 @@ def test_summarize_traces_reports_latency_tokens_cost_failures_and_quality(tmp_p
     assert report.quality_pass_count == 1
     assert report.quality_pass_rate == 1.0
     assert report.quality_score_avg == 1.0
+    assert any("unknown cost" in limitation for limitation in report.limitations)
+
+
+def test_summarize_empty_run_has_known_zero_cost(tmp_path) -> None:
+    report = summarize_traces(
+        workload_path=tmp_path / "workload.jsonl",
+        strategy="single_model",
+        provider="openai",
+        model="test-model",
+        ledger_path=tmp_path / "ledger.jsonl",
+        traces=[],
+    )
+
+    assert report.estimated_cost_usd == 0.0
+    assert report.cost_evidence_complete is True
 
 
 def test_write_report_outputs_json(tmp_path) -> None:
@@ -138,6 +163,7 @@ def test_write_report_outputs_json(tmp_path) -> None:
 
     raw = json.loads(report_path.read_text(encoding="utf-8"))
     assert raw["request_count"] == 0
+    assert raw["cost_evidence_complete"] is True
     assert raw["limitations"]
 
 
@@ -167,10 +193,53 @@ def test_compare_reports_marks_matching_runs_comparable(tmp_path) -> None:
     )
 
     assert comparison.comparable is True
+    assert comparison.cost_evidence_complete is True
     assert comparison.cost_delta_usd == pytest.approx(-0.02)
     assert comparison.cost_delta_percent == pytest.approx(-50.0)
     assert comparison.latency_p95_delta_ms == -50
     assert comparison.quality_pass_rate_delta == 0.0
+
+
+def test_compare_reports_rejects_incomplete_candidate_cost_evidence(tmp_path) -> None:
+    baseline = summarize_traces(
+        workload_path=tmp_path / "workload.jsonl",
+        strategy="single_model",
+        provider="openai",
+        model="baseline-model",
+        ledger_path=tmp_path / "baseline.jsonl",
+        traces=[_trace("1", model="baseline-model", estimated_cost_usd=0.04)],
+    )
+    candidate = summarize_traces(
+        workload_path=tmp_path / "workload.jsonl",
+        strategy="rule_based",
+        provider="openai",
+        model="candidate-model",
+        ledger_path=tmp_path / "candidate.jsonl",
+        traces=[
+            _trace(
+                "2",
+                model="candidate-model",
+                estimated_cost_usd=0.02,
+                provider_attempt_count=2,
+                provider_retry_count=1,
+                cost_evidence_complete=False,
+            )
+        ],
+    )
+
+    comparison = compare_reports(
+        baseline_run_id="baseline",
+        baseline=baseline,
+        candidate_run_id="candidate",
+        candidate=candidate,
+    )
+
+    assert comparison.comparable is False
+    assert comparison.cost_evidence_complete is False
+    assert comparison.candidate_cost_usd is None
+    assert comparison.cost_delta_usd is None
+    assert comparison.cost_delta_percent is None
+    assert any("incomplete provider-attempt cost evidence" in item for item in comparison.limitations)
 
 
 def test_compare_reports_rejects_quality_regression(tmp_path) -> None:
@@ -253,6 +322,7 @@ def test_write_comparison_outputs_json(tmp_path) -> None:
     raw = json.loads(comparison_path.read_text(encoding="utf-8"))
     assert raw["baseline_run_id"] == "baseline"
     assert raw["candidate_run_id"] == "candidate"
+    assert raw["cost_evidence_complete"] is True
     assert raw["limitations"]
 
 
