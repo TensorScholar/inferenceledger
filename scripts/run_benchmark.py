@@ -192,6 +192,7 @@ async def _run(args: argparse.Namespace) -> int:
                 timestamp=route_trace.timestamp,
                 provider_attempt_count=0,
                 provider_retry_count=0,
+                cost_evidence_complete=True,
             )
         except ProviderError as exc:
             trace = RequestTrace.from_error(
@@ -238,7 +239,8 @@ async def _run(args: argparse.Namespace) -> int:
                 f"budget_violations={report.budget_violation_count}",
                 f"latency_p50_ms={report.latency_p50_ms}",
                 f"latency_p95_ms={report.latency_p95_ms}",
-                f"estimated_cost_usd={report.estimated_cost_usd:.8f}",
+                f"execution_cost_usd={_format_optional_cost_value(report.estimated_cost_usd)}",
+                f"cost_evidence_complete={str(report.cost_evidence_complete).lower()}",
                 f"report_path={report_path}",
                 f"sqlite_ledger_path={sqlite_ledger_path}",
             ]
@@ -264,7 +266,8 @@ def _compare(args: argparse.Namespace) -> int:
                 f"comparable={str(comparison.comparable).lower()}",
                 f"baseline_run_id={comparison.baseline_run_id}",
                 f"candidate_run_id={comparison.candidate_run_id}",
-                f"cost_delta_usd={comparison.cost_delta_usd:.8f}",
+                f"cost_delta_usd={_format_optional_cost_value(comparison.cost_delta_usd)}",
+                f"cost_evidence_complete={str(comparison.cost_evidence_complete).lower()}",
                 f"latency_p95_delta_ms={comparison.latency_p95_delta_ms}",
                 f"comparison_path={args.comparison_path}",
             ]
@@ -318,7 +321,8 @@ def _usage_summary(args: argparse.Namespace) -> int:
                 f"successes={summary.success_count}",
                 f"failures={summary.failure_count}",
                 f"total_tokens={summary.total_tokens}",
-                f"estimated_cost_usd={summary.estimated_cost_usd:.8f}",
+                f"execution_cost_usd={_format_optional_cost_value(summary.estimated_cost_usd)}",
+                f"cost_evidence_complete={str(summary.cost_evidence_complete).lower()}",
                 f"provider_attempts={summary.provider_attempt_count}",
                 f"provider_retries={summary.provider_retry_count}",
             ]
@@ -378,6 +382,12 @@ def _model_config(model_name: str, tier: ModelTier) -> ModelConfig:
         cost_per_1k_input_tokens=pricing.input_per_million / 1000,
         cost_per_1k_output_tokens=pricing.output_per_million / 1000,
     )
+
+
+def _format_optional_cost_value(value: float | None) -> str:
+    if value is None:
+        return "unknown"
+    return f"{value:.8f}"
 
 
 if __name__ == "__main__":

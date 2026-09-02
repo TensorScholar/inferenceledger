@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+from ...domain.models.execution import ProviderAttempt
+
 
 class ProviderErrorType(StrEnum):
     """Stable provider failure categories used by retries and telemetry."""
@@ -18,7 +20,7 @@ class ProviderErrorType(StrEnum):
 
 @dataclass(frozen=True)
 class ProviderError(Exception):
-    """Provider exception with a normalized failure type."""
+    """Provider exception with a normalized failure type and observed attempt chain."""
 
     error_type: ProviderErrorType
     message: str
@@ -28,6 +30,12 @@ class ProviderError(Exception):
     cause: Exception | None = None
     provider_attempt_count: int = 1
     provider_retry_count: int = 0
+    provider_attempts: tuple[ProviderAttempt, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.provider_attempts:
+            object.__setattr__(self, "provider_attempt_count", len(self.provider_attempts))
+            object.__setattr__(self, "provider_retry_count", max(len(self.provider_attempts) - 1, 0))
 
     def __str__(self) -> str:
         return self.message

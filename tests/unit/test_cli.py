@@ -10,6 +10,11 @@ import scripts.run_benchmark as benchmark_script
 from inference_engine.benchmarking.harness import summarize_traces
 from inference_engine.benchmarking.sqlite_ledger import SQLiteBenchmarkLedger
 from inference_engine.cli import _run_smoke
+from inference_engine.domain.models.execution import (
+    AttemptOutcome,
+    CostEvidenceKind,
+    ProviderAttempt,
+)
 from inference_engine.domain.models.routing import (
     ModelConfig,
     ModelTier,
@@ -106,6 +111,8 @@ async def test_benchmark_budget_violation_skips_provider_call(
     assert ledger_row["error_type"] == "budget_violation"
     assert ledger_row["provider_attempt_count"] == 0
     assert ledger_row["provider_retry_count"] == 0
+    assert ledger_row["estimated_cost_usd"] == 0.0
+    assert ledger_row["cost_evidence_complete"] is True
     assert "fake expensive route" in (tmp_path / "routes.jsonl").read_text(encoding="utf-8")
 
 
@@ -134,6 +141,38 @@ def test_benchmark_build_router_supports_policy_strategy() -> None:
 
 def test_benchmark_usage_summary_cli_writes_provider_usage_json(tmp_path) -> None:
     ledger = SQLiteBenchmarkLedger(tmp_path / "ledger.sqlite3")
+    attempts = (
+        ProviderAttempt(
+            attempt_index=1,
+            provider="openai-compatible",
+            model="test-model",
+            outcome=AttemptOutcome.FAILED,
+            latency_ms=20,
+            prompt_tokens=4,
+            completion_tokens=2,
+            total_tokens=6,
+            cached_tokens=0,
+            calculated_cost_usd=0.0004,
+            cost_evidence=CostEvidenceKind.CALCULATED_FROM_USAGE,
+            pricing_table_version="test",
+            error_type="server_error",
+            status_code=500,
+        ),
+        ProviderAttempt(
+            attempt_index=2,
+            provider="openai-compatible",
+            model="test-model",
+            outcome=AttemptOutcome.SUCCEEDED,
+            latency_ms=30,
+            prompt_tokens=6,
+            completion_tokens=3,
+            total_tokens=9,
+            cached_tokens=0,
+            calculated_cost_usd=0.0006,
+            cost_evidence=CostEvidenceKind.CALCULATED_FROM_USAGE,
+            pricing_table_version="test",
+        ),
+    )
     trace = RequestTrace(
         request_id="request-1",
         provider="openai",
@@ -148,8 +187,7 @@ def test_benchmark_usage_summary_cli_writes_provider_usage_json(tmp_path) -> Non
         error_type=None,
         error_message=None,
         timestamp="2026-01-01T00:00:00+00:00",
-        provider_attempt_count=2,
-        provider_retry_count=1,
+        provider_attempts=attempts,
     )
     report = summarize_traces(
         workload_path=tmp_path / "workload.jsonl",
@@ -174,6 +212,7 @@ def test_benchmark_usage_summary_cli_writes_provider_usage_json(tmp_path) -> Non
     assert exit_code == 0
     assert payload["run_id"] == "run-1"
     assert payload["estimated_cost_usd"] == 0.001
+    assert payload["cost_evidence_complete"] is True
     assert payload["provider_attempt_count"] == 2
     assert payload["provider_retry_count"] == 1
     assert payload["cost_by_model"] == {"test-model": 0.001}
