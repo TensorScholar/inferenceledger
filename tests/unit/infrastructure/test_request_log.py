@@ -206,6 +206,31 @@ def test_jsonl_reader_downgrades_legacy_retry_cost_to_unknown(tmp_path) -> None:
     assert trace.cost_evidence_complete is False
 
 
+def test_request_trace_allows_known_zero_cost_when_no_provider_attempt_occurred() -> None:
+    trace = RequestTrace(
+        request_id="request-1",
+        provider="openai",
+        model="test-model",
+        latency_ms=0,
+        prompt_tokens=0,
+        completion_tokens=0,
+        total_tokens=0,
+        estimated_cost_usd=0.0,
+        pricing_table_version="not_charged",
+        cache_hit=False,
+        error_type="budget_violation",
+        error_message="rejected before provider execution",
+        timestamp="2026-01-01T00:00:00+00:00",
+        provider_attempt_count=0,
+        provider_retry_count=0,
+        cost_evidence_complete=True,
+    )
+
+    assert trace.estimated_cost_usd == 0.0
+    assert trace.cost_evidence_complete is True
+    assert trace.provider_attempt_count == 0
+
+
 def test_request_trace_rejects_numeric_total_when_cost_is_incomplete() -> None:
     with pytest.raises(ValueError, match="incomplete cost evidence"):
         RequestTrace(
