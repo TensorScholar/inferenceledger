@@ -35,13 +35,13 @@ def _quote(
     if amount_usd == 0.0005:
         input_tokens = 5_000
         output_tokens = 2_500
-        input_rate = 50.0
-        output_rate = 100.0
+        input_rate = 0.05
+        output_rate = 0.1
     elif amount_usd == 0.001:
         input_tokens = 10_000
         output_tokens = 5_000
-        input_rate = 50.0
-        output_rate = 100.0
+        input_rate = 0.05
+        output_rate = 0.1
     else:
         raise ValueError("unsupported test quote amount")
     return PricingQuote(
