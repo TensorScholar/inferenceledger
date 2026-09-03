@@ -8,6 +8,7 @@ from typing import Any
 
 from ..infrastructure.telemetry.request_log import RequestTrace, RouteTrace
 from .harness import BenchmarkReport
+from .reconciliation import reconcile_run_costs
 from .sqlite_ledger import ProviderUsageSummary
 
 
@@ -20,9 +21,11 @@ def export_run_json(
     output_path: Path,
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    reconciliation = reconcile_run_costs(routes=routes, executions=traces)
     payload = {
         "run_id": run_id,
         "report": asdict(report),
+        "cost_reconciliation": asdict(reconciliation),
         "traces": [asdict(trace) for trace in traces],
         "routes": [asdict(route) for route in routes],
     }
@@ -41,6 +44,7 @@ def export_run_markdown(
     provider_usage_summary: ProviderUsageSummary | None = None,
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    reconciliation = reconcile_run_costs(routes=routes, executions=traces)
     lines = [
         f"# Benchmark Run `{run_id}`",
         "",
@@ -131,6 +135,61 @@ def export_run_markdown(
     else:
         lines.append("No provider usage summary was available for this export.")
 
+    lines.extend(
+        [
+            "",
+            "## Route Estimate vs Observed Execution",
+            "",
+            f"- Paired requests: {reconciliation.paired_request_count}",
+            f"- Comparable requests: {reconciliation.comparable_request_count}",
+            f"- Comparable coverage: {_format_rate(reconciliation.comparable_coverage)}",
+            f"- Comparable successes: {reconciliation.comparable_success_count}",
+            f"- Comparable failures: {reconciliation.comparable_failure_count}",
+            f"- Not executed: {reconciliation.not_executed_count}",
+            f"- Route cost incomplete: {reconciliation.route_cost_incomplete_count}",
+            f"- Execution cost incomplete: {reconciliation.execution_cost_incomplete_count}",
+            f"- Missing route: {reconciliation.missing_route_count}",
+            f"- Missing execution: {reconciliation.missing_execution_count}",
+            f"- Comparable route estimate: {_format_optional_cost(reconciliation.comparable_route_estimated_cost_usd)}",
+            f"- Comparable observed execution cost: {_format_optional_cost(reconciliation.comparable_observed_execution_cost_usd)}",
+            f"- Observed minus route estimate: {_format_optional_signed_cost(reconciliation.comparable_cost_delta_usd)}",
+            f"- Aggregate cost delta: {_format_optional_percent(reconciliation.comparable_cost_delta_percent)}",
+            f"- Mean absolute cost deviation: {_format_optional_cost(reconciliation.mean_absolute_cost_deviation_usd)}",
+            f"- Median absolute cost deviation: {_format_optional_cost(reconciliation.median_absolute_cost_deviation_usd)}",
+            f"- p95 absolute cost deviation: {_format_optional_cost(reconciliation.p95_absolute_cost_deviation_usd)}",
+            f"- Underestimation rate: {_format_optional_rate(reconciliation.underestimation_rate)}",
+            f"- Overestimation rate: {_format_optional_rate(reconciliation.overestimation_rate)}",
+            f"- Matched rate: {_format_optional_rate(reconciliation.matched_rate)}",
+            f"- Known non-final attempt cost: {_format_optional_cost(reconciliation.non_final_attempt_cost_usd)}",
+            f"- Retry amplification share of comparable execution cost: {_format_optional_rate(reconciliation.retry_amplification_share)}",
+            "",
+        ]
+    )
+    if reconciliation.request_reconciliations:
+        lines.extend(
+            [
+                "| Request | Status | Route model | Execution model | Route estimate | Observed execution | Delta | Relative delta | Attempts | Retries | Path diverged |",
+                "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+            ]
+        )
+        for item in reconciliation.request_reconciliations:
+            lines.append(
+                "| "
+                f"`{item.request_id}` | "
+                f"`{item.status.value}` | "
+                f"`{item.route_model or 'n/a'}` | "
+                f"`{item.execution_model or 'n/a'}` | "
+                f"{_format_optional_cost(item.route_estimated_cost_usd)} | "
+                f"{_format_optional_cost(item.observed_execution_cost_usd)} | "
+                f"{_format_optional_signed_cost(item.cost_delta_usd)} | "
+                f"{_format_optional_percent(item.relative_cost_delta_percent)} | "
+                f"{item.provider_attempt_count} | "
+                f"{item.provider_retry_count} | "
+                f"{item.execution_path_diverged} |"
+            )
+    else:
+        lines.append("No route/execution pairs were available for reconciliation.")
+
     lines.extend(["", "## Route Decisions", ""])
     if routes:
         lines.extend(
@@ -201,6 +260,9 @@ def export_run_markdown(
     for limitation in report.limitations:
         lines.append(f"- {limitation}")
     lines.append("- Route cost is defensible only when route cost evidence is complete.")
+    lines.append(
+        "- Reconciliation metrics include only paired requests with complete route and execution cost evidence and at least one provider attempt."
+    )
     lines.append("- This export is evidence for one run only; compare runs before discussing cost deltas.")
     lines.append("")
 
@@ -223,6 +285,12 @@ def _format_optional_rate(value: float | None) -> str:
     return _format_rate(value)
 
 
+def _format_optional_percent(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:+.2f}%"
+
+
 def _format_optional_float(value: float | None) -> str:
     if value is None:
         return "n/a"
@@ -233,6 +301,13 @@ def _format_optional_cost(value: float | None) -> str:
     if value is None:
         return "unknown"
     return f"${value:.8f}"
+
+
+def _format_optional_signed_cost(value: float | None) -> str:
+    if value is None:
+        return "unknown"
+    sign = "+" if value > 0 else ""
+    return f"{sign}${value:.8f}" if value >= 0 else f"-${abs(value):.8f}"
 
 
 def _escape_table(value: str) -> str:
