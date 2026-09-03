@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import date
 
 from inference_engine.benchmarking.export import export_run_json, export_run_markdown
 from inference_engine.benchmarking.harness import summarize_traces
 from inference_engine.benchmarking.sqlite_ledger import ProviderUsageSummary, SQLiteBenchmarkLedger
+from inference_engine.domain.cost.pricing import PricingQuote
 from inference_engine.infrastructure.telemetry.request_log import RequestTrace, RouteTrace
 from scripts.run_benchmark import _export
 
@@ -34,12 +36,32 @@ def _trace() -> RequestTrace:
     )
 
 
+def _route_quote() -> PricingQuote:
+    observed_at = date(2026, 9, 3)
+    return PricingQuote(
+        amount_usd=0.001,
+        provider="openai",
+        model="test-model",
+        input_tokens=10,
+        output_tokens=5,
+        cached_input_tokens=0,
+        input_per_million=50.0,
+        output_per_million=100.0,
+        cached_input_per_million=None,
+        pricing_record_id=f"openai:test-model:{observed_at.isoformat()}",
+        pricing_table_version="test-route-v1",
+        pricing_observed_at=observed_at,
+        pricing_source_url="https://pricing.example/test-model",
+    )
+
+
 def _route() -> RouteTrace:
+    quote = _route_quote()
     return RouteTrace(
         request_id="request-1",
         strategy="single_model",
         selected_model="test-model",
-        estimated_cost_usd=0.001,
+        estimated_cost_usd=quote.amount_usd,
         estimated_latency_ms=250,
         decision_reason="single model",
         considered_models=["test-model"],
@@ -48,10 +70,12 @@ def _route() -> RouteTrace:
         budget_violation=False,
         budget_violation_reason=None,
         timestamp="2026-01-01T00:00:00+00:00",
+        cost_evidence_complete=True,
+        cost_quote=quote,
     )
 
 
-def test_export_run_json_writes_report_traces_and_routes(tmp_path) -> None:
+def test_export_run_json_writes_report_traces_routes_and_pricing_evidence(tmp_path) -> None:
     traces = [_trace()]
     routes = [_route()]
     report = summarize_traces(
@@ -72,6 +96,9 @@ def test_export_run_json_writes_report_traces_and_routes(tmp_path) -> None:
     assert payload["report"]["request_count"] == 1
     assert payload["traces"][0]["request_id"] == "request-1"
     assert payload["routes"][0]["selected_model"] == "test-model"
+    assert payload["routes"][0]["cost_evidence_complete"] is True
+    assert payload["routes"][0]["cost_quote"]["pricing_observed_at"] == "2026-09-03"
+    assert payload["routes"][0]["cost_quote"]["input_per_million"] == 50.0
 
 
 def test_export_run_markdown_writes_summary(tmp_path) -> None:
@@ -122,6 +149,9 @@ def test_export_run_markdown_writes_summary(tmp_path) -> None:
     assert "- Provider attempts: 1" in raw
     assert "- Provider retries: 0" in raw
     assert "## Route Decisions" in raw
+    assert "Pricing evidence for `request-1`" in raw
+    assert "`openai:test-model:2026-09-03`" in raw
+    assert "input=10, output=5, cached_input=0" in raw
     assert "## Limitations" in raw
 
 
@@ -150,7 +180,12 @@ def test_export_cli_writes_both_formats(tmp_path) -> None:
     )
 
     assert exit_code == 0
+    json_path = tmp_path / "exports" / "run-1.json"
     markdown_path = tmp_path / "exports" / "run-1.md"
-    assert (tmp_path / "exports" / "run-1.json").exists()
+    assert json_path.exists()
     assert markdown_path.exists()
+    exported = json.loads(json_path.read_text(encoding="utf-8"))
+    assert exported["routes"][0]["cost_quote"]["pricing_record_id"] == (
+        "openai:test-model:2026-09-03"
+    )
     assert "## Provider Usage Summary" in markdown_path.read_text(encoding="utf-8")
