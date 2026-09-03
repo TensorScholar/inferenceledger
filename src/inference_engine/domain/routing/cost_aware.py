@@ -11,6 +11,7 @@ from ..models.routing import (
     RoutingStrategy,
 )
 from .base import AbstractRouter
+from .capability import supports_request_context
 from .complexity import ComplexityEstimator
 from .cost_estimator import RoutingCostEstimator
 
@@ -75,8 +76,7 @@ class CostAwareRouter(AbstractRouter):
     def _can_handle_request(
         self, model: ModelConfig, request: InferenceRequest, complexity: ComplexityEstimate
     ) -> bool:
-        total_tokens = request.estimated_input_tokens + request.parameters.max_tokens
-        if total_tokens > model.max_context_length:
+        if not supports_request_context(model, request):
             return False
         return not (
             complexity.recommended_tier == ModelTier.PREMIUM and model.tier == ModelTier.ECONOMY

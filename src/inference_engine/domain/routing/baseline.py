@@ -9,6 +9,7 @@ from ..models.routing import (
     RoutingStrategy,
 )
 from .base import AbstractRouter
+from .capability import supports_request_context
 from .complexity import ComplexityEstimator
 from .cost_estimator import RoutingCostEstimator
 
@@ -45,7 +46,7 @@ class BaselineRouter(AbstractRouter):
     def _single_model_decision(self, request: InferenceRequest) -> RoutingDecision:
         if self.single_model_id is None:
             raise BaselineRoutingModeError("single_model baseline requires single_model_id")
-        selected = self._get_available_model(self.single_model_id)
+        selected = self._get_available_model(self.single_model_id, request)
         return self._decision(
             request=request,
             selected=selected,
@@ -67,14 +68,25 @@ class BaselineRouter(AbstractRouter):
             complexity_estimate=complexity,
         )
 
-    def _get_available_model(self, model_id: str) -> ModelConfig:
+    def _get_available_model(self, model_id: str, request: InferenceRequest) -> ModelConfig:
         try:
             model = self.models[model_id]
         except KeyError as exc:
             raise BaselineRoutingModeError(f"Unknown model id: {model_id}") from exc
         if not model.is_available:
             raise BaselineRoutingModeError(f"Configured model is not available: {model_id}")
+        if not supports_request_context(model, request):
+            raise BaselineRoutingModeError(
+                f"Configured model cannot satisfy request context: {model_id}"
+            )
         return model
+
+    def _eligible_models(self, request: InferenceRequest) -> list[ModelConfig]:
+        return [
+            model
+            for model in self.models.values()
+            if model.is_available and supports_request_context(model, request)
+        ]
 
     def _cheapest_model_for_tier(
         self,
@@ -82,12 +94,12 @@ class BaselineRouter(AbstractRouter):
         request: InferenceRequest,
     ) -> ModelConfig:
         candidates = [
-            model
-            for model in self.models.values()
-            if model.is_available and model.tier.rank >= tier.rank
+            model for model in self._eligible_models(request) if model.tier.rank >= tier.rank
         ]
         if not candidates:
-            raise BaselineRoutingModeError(f"No available model can satisfy tier {tier.value}")
+            raise BaselineRoutingModeError(
+                f"No available model can satisfy tier {tier.value} and request context"
+            )
         return min(
             candidates,
             key=lambda model: self._estimate_cost(model, request),
@@ -110,9 +122,8 @@ class BaselineRouter(AbstractRouter):
         complexity_estimate: ComplexityEstimate | None = None,
     ) -> RoutingDecision:
         estimated_cost = self._estimate_cost(selected, request)
-        fallback_models = [
-            model for model in self.models.values() if model.is_available and model.id != selected.id
-        ]
+        eligible_models = self._eligible_models(request)
+        fallback_models = [model for model in eligible_models if model.id != selected.id]
         return RoutingDecision(
             request_id=request.id,
             selected_model=selected,
@@ -123,7 +134,7 @@ class BaselineRouter(AbstractRouter):
             estimated_latency_ms=selected.avg_latency_ms,
             estimated_quality_score=_tier_quality(selected.tier),
             decision_reason=reason,
-            considered_models=[model.id for model in self.models.values()],
+            considered_models=sorted(model.id for model in eligible_models),
         )
 
 

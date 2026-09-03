@@ -12,6 +12,7 @@ from ..models.routing import (
     RoutingStrategy,
 )
 from .base import AbstractRouter
+from .capability import supports_request_context
 from .complexity import ComplexityEstimator
 from .cost_estimator import RoutingCostEstimator
 
@@ -92,10 +93,9 @@ class PolicyRouter(AbstractRouter):
     def _candidates(
         self, request: InferenceRequest, complexity: ComplexityEstimate
     ) -> list[_Candidate]:
-        total_tokens = request.estimated_input_tokens + request.parameters.max_tokens
         candidates: list[_Candidate] = []
         for model in self.models.values():
-            if not model.is_available or total_tokens > model.max_context_length:
+            if not model.is_available or not supports_request_context(model, request):
                 continue
             candidates.append(
                 _Candidate(
