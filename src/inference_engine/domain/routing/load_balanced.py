@@ -3,13 +3,14 @@ import structlog
 from ..models.request import InferenceRequest
 from ..models.routing import ModelConfig, RoutingDecision, RoutingStrategy
 from .base import AbstractRouter
+from .capability import supports_request_context
 from .cost_estimator import RoutingCostEstimator
 
 logger = structlog.get_logger()
 
 
 class LoadBalancedRouter(AbstractRouter):
-    """Round-robin load balancing across available models."""
+    """Round-robin load balancing across available context-capable models."""
 
     def __init__(self, models: list[ModelConfig], cost_estimator: RoutingCostEstimator) -> None:
         self.models = models
@@ -17,11 +18,15 @@ class LoadBalancedRouter(AbstractRouter):
         self.current_index = 0
 
     async def route(self, request: InferenceRequest) -> RoutingDecision:
-        available = [model for model in self.models if model.is_available]
-        if not available:
-            raise RuntimeError("No available models for routing")
+        eligible = [
+            model
+            for model in self.models
+            if model.is_available and supports_request_context(model, request)
+        ]
+        if not eligible:
+            raise RuntimeError("No available model can satisfy request context")
 
-        selected = available[self.current_index % len(available)]
+        selected = eligible[self.current_index % len(eligible)]
         self.current_index += 1
         estimated_cost = self.cost_estimator.estimate(
             model_id=selected.id,
@@ -46,5 +51,5 @@ class LoadBalancedRouter(AbstractRouter):
             estimated_latency_ms=selected.avg_latency_ms,
             estimated_quality_score=0.7,
             decision_reason=f"Round-robin selection: {selected.id}",
-            considered_models=[model.id for model in available],
+            considered_models=[model.id for model in eligible],
         )
