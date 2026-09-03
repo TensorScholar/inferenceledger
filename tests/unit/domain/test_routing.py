@@ -32,11 +32,8 @@ class FakeCostEstimator:
         input_tokens: int,
         output_tokens: int,
     ) -> PricingQuote:
-        amount = (
-            (input_tokens + output_tokens)
-            / 1000
-            * self.cost_per_1k_total_tokens[model_id]
-        )
+        rate_per_million = self.cost_per_1k_total_tokens[model_id] * 1000
+        amount = (input_tokens + output_tokens) * rate_per_million / 1_000_000
         observed_at = date(2026, 9, 3)
         return PricingQuote(
             amount_usd=amount,
@@ -45,6 +42,9 @@ class FakeCostEstimator:
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cached_input_tokens=0,
+            input_per_million=rate_per_million,
+            output_per_million=rate_per_million,
+            cached_input_per_million=None,
             pricing_record_id=f"test-provider:{model_id}:{observed_at.isoformat()}",
             pricing_table_version="test-routing-v1",
             pricing_observed_at=observed_at,
