@@ -8,7 +8,12 @@ import pytest
 from inference_engine.benchmarking.harness import summarize_traces
 from inference_engine.benchmarking.sqlite_ledger import SQLiteBenchmarkLedger
 from inference_engine.domain.cost.pricing import PricingQuote
-from inference_engine.domain.models.routing import ModelConfig, ModelTier, RoutingDecision, RoutingStrategy
+from inference_engine.domain.models.routing import (
+    ModelConfig,
+    ModelTier,
+    RoutingDecision,
+    RoutingStrategy,
+)
 from inference_engine.infrastructure.telemetry.request_log import RequestTrace, RouteTrace
 
 
