@@ -9,7 +9,6 @@ from typing import TypeVar
 from ..domain.models.execution import AttemptOutcome
 from ..infrastructure.telemetry.request_log import RequestTrace, RouteTrace
 
-
 TTrace = TypeVar("TTrace", RouteTrace, RequestTrace)
 
 
@@ -82,6 +81,8 @@ class RunCostReconciliation:
     execution_cost_incomplete_count: int
     missing_route_count: int
     missing_execution_count: int
+    execution_path_divergence_count: int
+    execution_path_divergence_rate: float | None
     comparable_route_estimated_cost_usd: float | None
     comparable_observed_execution_cost_usd: float | None
     comparable_cost_delta_usd: float | None
@@ -92,6 +93,7 @@ class RunCostReconciliation:
     underestimation_rate: float | None
     overestimation_rate: float | None
     matched_rate: float | None
+    retry_amplification_eligible_request_count: int
     non_final_attempt_cost_usd: float | None
     retry_amplification_share: float | None
     request_reconciliations: tuple[RequestCostReconciliation, ...]
@@ -225,7 +227,7 @@ def reconcile_run_costs(
         for request_id in request_ids
         if request_id in routes_by_id and request_id in executions_by_id
     )
-    coverage = comparable_count / paired_count if paired_count else 0.0
+    coverage = comparable_count / len(request_ids) if request_ids else 0.0
 
     route_total: float | None = None
     execution_total: float | None = None
@@ -257,15 +259,29 @@ def reconcile_run_costs(
         for item in comparable
         if item.deviation_direction == CostDeviationDirection.MATCHED
     )
-    non_final_values = [
-        item.non_final_attempt_cost_usd
+    path_divergence_count = sum(1 for item in comparable if item.execution_path_diverged)
+
+    amplification_eligible = [
+        item
         for item in comparable
         if item.non_final_attempt_cost_usd is not None
+        and item.observed_execution_cost_usd is not None
     ]
-    non_final_total = sum(non_final_values) if non_final_values else None
+    non_final_total = (
+        sum(_required(item.non_final_attempt_cost_usd) for item in amplification_eligible)
+        if amplification_eligible
+        else None
+    )
+    amplification_execution_total = (
+        sum(_required(item.observed_execution_cost_usd) for item in amplification_eligible)
+        if amplification_eligible
+        else None
+    )
     retry_share = (
-        non_final_total / execution_total
-        if non_final_total is not None and execution_total is not None and execution_total > 0
+        non_final_total / amplification_execution_total
+        if non_final_total is not None
+        and amplification_execution_total is not None
+        and amplification_execution_total > 0
         else None
     )
 
@@ -291,6 +307,10 @@ def reconcile_run_costs(
         missing_execution_count=_count_status(
             reconciliations, ReconciliationStatus.MISSING_EXECUTION
         ),
+        execution_path_divergence_count=path_divergence_count,
+        execution_path_divergence_rate=(
+            path_divergence_count / comparable_count if comparable_count else None
+        ),
         comparable_route_estimated_cost_usd=route_total,
         comparable_observed_execution_cost_usd=execution_total,
         comparable_cost_delta_usd=delta_total,
@@ -309,6 +329,7 @@ def reconcile_run_costs(
         underestimation_rate=under / comparable_count if comparable_count else None,
         overestimation_rate=over / comparable_count if comparable_count else None,
         matched_rate=matched / comparable_count if comparable_count else None,
+        retry_amplification_eligible_request_count=len(amplification_eligible),
         non_final_attempt_cost_usd=non_final_total,
         retry_amplification_share=retry_share,
         request_reconciliations=reconciliations,
@@ -323,6 +344,10 @@ def _incomplete_reconciliation(
     execution: RequestTrace | None,
 ) -> RequestCostReconciliation:
     execution_path = _execution_path(execution) if execution is not None else ()
+    if execution is None or status == ReconciliationStatus.NOT_EXECUTED:
+        execution_succeeded: bool | None = None
+    else:
+        execution_succeeded = execution.error_type is None
     return RequestCostReconciliation(
         request_id=request_id,
         status=status,
@@ -354,7 +379,7 @@ def _incomplete_reconciliation(
         successful_final_attempt_cost_usd=None,
         non_final_attempt_cost_usd=None,
         retry_amplification_ratio=None,
-        execution_succeeded=(execution.error_type is None if execution is not None else None),
+        execution_succeeded=execution_succeeded,
         error_type=execution.error_type if execution is not None else None,
     )
 
