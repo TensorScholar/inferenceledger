@@ -78,7 +78,7 @@ class TTL_EvictionPolicy(EvictionPolicy):
 
 
 class CostAwareEvictionPolicy(EvictionPolicy):
-    """Evict based on cost-benefit ratio without inventing value for unknown cost."""
+    """Evict by measured cost benefit, falling back to LRU when economics are unknown."""
 
     def should_evict(self, _entry: CacheEntry) -> bool:
         return False
@@ -87,10 +87,18 @@ class CostAwareEvictionPolicy(EvictionPolicy):
         if not entries:
             raise ValueError("Cannot evict from empty list")
 
+        if any(entry.cost_savings is None for entry in entries):
+            fallback = min(entries, key=lambda entry: entry.last_accessed)
+            logger.debug(
+                "cost_aware_eviction_fallback_lru",
+                entry_id=str(fallback.id),
+                reason="unknown_cost_evidence",
+            )
+            return fallback
+
         def score(entry: CacheEntry) -> float:
             benefit = entry.cost_savings
-            if benefit is None:
-                return float("-inf")
+            assert benefit is not None
             if entry.age_seconds == 0:
                 return float("inf")
             return benefit / entry.age_seconds
