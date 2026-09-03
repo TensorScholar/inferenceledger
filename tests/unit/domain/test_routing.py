@@ -1,7 +1,10 @@
 """Unit tests for routing strategies."""
 
+from datetime import date
+
 import pytest
 
+from inference_engine.domain.cost.pricing import PricingQuote
 from inference_engine.domain.models.request import InferenceRequest, ModelParameters
 from inference_engine.domain.models.routing import (
     ModelConfig,
@@ -17,10 +20,33 @@ from inference_engine.domain.routing.policy import PolicyRouter, PolicyRouterCon
 
 
 class FakeCostEstimator:
-    """Deterministic test-only tariff source; model metadata contains no monetary rates."""
+    """Deterministic test-only pricing authority that emits provenance-complete quotes."""
 
     def __init__(self, cost_per_1k_total_tokens: dict[str, float]) -> None:
         self.cost_per_1k_total_tokens = cost_per_1k_total_tokens
+
+    def quote(
+        self,
+        *,
+        model_id: str,
+        input_tokens: int,
+        output_tokens: int,
+    ) -> PricingQuote:
+        amount = (
+            (input_tokens + output_tokens)
+            / 1000
+            * self.cost_per_1k_total_tokens[model_id]
+        )
+        observed_at = date(2026, 9, 3)
+        return PricingQuote(
+            amount_usd=amount,
+            provider="test-provider",
+            model=model_id,
+            pricing_record_id=f"test-provider:{model_id}:{observed_at.isoformat()}",
+            pricing_table_version="test-routing-v1",
+            pricing_observed_at=observed_at,
+            pricing_source_url=f"https://pricing.example/{model_id}",
+        )
 
     def estimate(
         self,
@@ -29,11 +55,11 @@ class FakeCostEstimator:
         input_tokens: int,
         output_tokens: int,
     ) -> float:
-        return (
-            (input_tokens + output_tokens)
-            / 1000
-            * self.cost_per_1k_total_tokens[model_id]
-        )
+        return self.quote(
+            model_id=model_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        ).amount_usd
 
 
 @pytest.fixture
@@ -124,6 +150,7 @@ class TestCostAwareRouter:
         decision = await router.route(simple_request)
 
         assert decision.selected_model.id == "gpt-3.5"
+        assert decision.cost_quote is not None
         assert decision.estimated_cost == pytest.approx(
             sample_cost_estimator.estimate(
                 model_id="gpt-3.5",
@@ -152,6 +179,7 @@ class TestCostAwareRouter:
 
         decision = await router.route(complex_request)
 
+        assert decision.cost_quote is not None
         assert decision.estimated_cost == pytest.approx(
             sample_cost_estimator.estimate(
                 model_id=decision.selected_model.id,
@@ -199,6 +227,7 @@ class TestBaselineRouter:
 
         assert decision.strategy == RoutingStrategy.SINGLE_MODEL
         assert decision.selected_model.id == "gpt-4"
+        assert decision.cost_quote is not None
         assert "single_model baseline" in decision.decision_reason
 
     @pytest.mark.asyncio
@@ -220,7 +249,9 @@ class TestBaselineRouter:
         complex_decision = await router.route(complex_request)
 
         assert simple_decision.selected_model.id == "gpt-3.5"
+        assert simple_decision.cost_quote is not None
         assert complex_decision.selected_model.tier.rank >= ModelTier.STANDARD.rank
+        assert complex_decision.cost_quote is not None
         assert complex_decision.complexity_estimate is not None
 
     @pytest.mark.asyncio
@@ -296,6 +327,7 @@ class TestPolicyRouter:
 
         assert decision.strategy == RoutingStrategy.POLICY
         assert decision.selected_model.id == "economy"
+        assert decision.cost_quote is not None
         assert decision.estimated_cost <= 0.00003
         assert decision.decision_reason == RoutingReason.POLICY_COST_WITHIN_BUDGET
 
@@ -319,6 +351,7 @@ class TestPolicyRouter:
         decision = await router.route(simple_request)
 
         assert decision.selected_model.id == "standard"
+        assert decision.cost_quote is not None
         assert decision.estimated_latency_ms <= 800
         assert decision.decision_reason == RoutingReason.POLICY_LATENCY_WITHIN_SLO
 
@@ -339,6 +372,7 @@ class TestPolicyRouter:
         decision = await router.route(simple_request)
 
         assert decision.selected_model.id == "premium"
+        assert decision.cost_quote is not None
         assert decision.estimated_quality_score >= 0.90
         assert decision.decision_reason == RoutingReason.POLICY_QUALITY_FLOOR
 
@@ -359,6 +393,7 @@ class TestPolicyRouter:
         decision = await router.route(simple_request)
 
         assert decision.selected_model.id == "economy"
+        assert decision.cost_quote is not None
         assert decision.estimated_cost > 0.00000001
         assert decision.decision_reason == RoutingReason.POLICY_NO_CANDIDATE_WITHIN_BUDGET
 
@@ -381,6 +416,7 @@ class TestPolicyRouter:
 
         decision = await router.route(simple_request)
 
+        assert decision.cost_quote is not None
         assert decision.decision_reason == RoutingReason.POLICY_NO_CANDIDATE_MEETS_QUALITY_FLOOR
 
 
@@ -398,5 +434,7 @@ class TestLoadBalancedRouter:
         decision2 = await router.route(simple_request)
 
         assert decision1.selected_model.id != decision2.selected_model.id
+        assert decision1.cost_quote is not None
+        assert decision2.cost_quote is not None
         assert decision1.estimated_cost > 0
         assert decision2.estimated_cost > 0
