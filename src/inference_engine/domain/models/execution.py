@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from enum import StrEnum
 
 
@@ -47,6 +48,10 @@ class ProviderAttempt:
     def __post_init__(self) -> None:
         if self.attempt_index < 1:
             raise ValueError("attempt_index must be at least 1")
+        if not self.provider.strip():
+            raise ValueError("provider must be non-empty")
+        if not self.model.strip():
+            raise ValueError("model must be non-empty")
         if self.latency_ms < 0:
             raise ValueError("latency_ms must be non-negative")
 
@@ -70,8 +75,21 @@ class ProviderAttempt:
         if self.cost_evidence == CostEvidenceKind.CALCULATED_FROM_USAGE:
             if self.calculated_cost_usd is None:
                 raise ValueError("calculated cost evidence requires calculated_cost_usd")
-            if any(value is None for value in pricing_provenance):
+            if any(value is None or not value.strip() for value in pricing_provenance):
                 raise ValueError("calculated cost evidence requires complete pricing provenance")
+            assert self.pricing_observed_at is not None
+            assert self.pricing_record_id is not None
+            try:
+                date.fromisoformat(self.pricing_observed_at)
+            except ValueError as exc:
+                raise ValueError("pricing_observed_at must be an ISO date") from exc
+            expected_record_id = (
+                f"{self.provider}:{self.model}:{self.pricing_observed_at}"
+            )
+            if self.pricing_record_id != expected_record_id:
+                raise ValueError(
+                    "pricing_record_id must bind the observed provider, model, and pricing date"
+                )
         else:
             if self.calculated_cost_usd is not None:
                 raise ValueError("unknown cost evidence must not carry a calculated cost")
