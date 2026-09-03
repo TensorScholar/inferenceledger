@@ -23,6 +23,7 @@ from .errors import ProviderError, classify_openai_error, missing_usage_error
 logger = structlog.get_logger()
 
 _PROVIDER_PROTOCOL = "openai-compatible"
+_UNKNOWN_COMPATIBLE_PROVIDER = "openai-compatible-unknown"
 
 
 @dataclass(frozen=True)
@@ -54,8 +55,11 @@ class ProviderCallResult:
 class OpenAIBackend(AbstractModelBackend):
     """OpenAI-compatible chat completions backend.
 
-    Protocol compatibility is not billing identity. A custom `base_url` is therefore unpriced by
-    default unless the caller explicitly supplies `pricing_provider`.
+    Transport protocol, execution-provider identity, and billing identity are deliberately separate.
+    Direct OpenAI calls can safely default both identities to ``openai``. A custom ``base_url`` is
+    unpriced by default and records an unknown compatible provider unless the caller supplies an
+    explicit provider identity. Pricing for a custom endpoint is enabled only when both execution
+    and pricing identities are explicit.
     """
 
     def __init__(
@@ -67,10 +71,19 @@ class OpenAIBackend(AbstractModelBackend):
         timeout_seconds: float = 30.0,
         retry_policy: RetryPolicy | None = None,
         cost_calculator: CostCalculator | None = None,
+        provider_name: str | None = None,
         pricing_provider: str | None = None,
     ) -> None:
         if AsyncOpenAI is None:
             raise ImportError("openai package not installed")
+        if provider_name is not None and not provider_name.strip():
+            raise ValueError("provider_name must be non-empty when supplied")
+        if pricing_provider is not None and not pricing_provider.strip():
+            raise ValueError("pricing_provider must be non-empty when supplied")
+        if base_url is not None and pricing_provider is not None and provider_name is None:
+            raise ValueError(
+                "custom OpenAI-compatible pricing requires an explicit provider_name as well as pricing_provider"
+            )
 
         self.client = AsyncOpenAI(
             api_key=api_key,
@@ -81,6 +94,10 @@ class OpenAIBackend(AbstractModelBackend):
         self._model_name = model_name
         self.retry_policy = retry_policy or RetryPolicy()
         self.cost_calculator = cost_calculator or CostCalculator()
+        self.provider_protocol = _PROVIDER_PROTOCOL
+        self.provider_name = provider_name or (
+            "openai" if base_url is None else _UNKNOWN_COMPATIBLE_PROVIDER
+        )
         self.pricing_provider = pricing_provider if pricing_provider is not None else (
             "openai" if base_url is None else None
         )
@@ -107,6 +124,7 @@ class OpenAIBackend(AbstractModelBackend):
             )
             raise replace(
                 missing_usage_error(self.model_name),
+                provider=self.provider_name,
                 provider_attempts=attempts,
             )
 
@@ -164,6 +182,7 @@ class OpenAIBackend(AbstractModelBackend):
         except UnknownModelPricingError:
             logger.warning(
                 "provider_usage_unpriced",
+                provider=self.provider_name,
                 pricing_provider=self.pricing_provider,
                 model=self.model_name,
                 pricing_table_version=self.cost_calculator.pricing_table.version,
@@ -201,7 +220,11 @@ class OpenAIBackend(AbstractModelBackend):
             )
             return True
         except Exception as exc:
-            logger.error("openai_compatible_health_check_failed", error=str(exc))
+            logger.error(
+                "openai_compatible_health_check_failed",
+                provider=self.provider_name,
+                error=str(exc),
+            )
             return False
 
     async def _create_completion(
@@ -232,7 +255,7 @@ class OpenAIBackend(AbstractModelBackend):
                 attempts.append(
                     ProviderAttempt(
                         attempt_index=attempt_index,
-                        provider=_PROVIDER_PROTOCOL,
+                        provider=self.provider_name,
                         model=self.model_name,
                         outcome=AttemptOutcome.SUCCEEDED,
                         latency_ms=int((perf_counter() - attempt_start) * 1000),
@@ -242,11 +265,14 @@ class OpenAIBackend(AbstractModelBackend):
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                provider_error = classify_openai_error(exc)
+                provider_error = replace(
+                    classify_openai_error(exc),
+                    provider=self.provider_name,
+                )
                 attempts.append(
                     ProviderAttempt(
                         attempt_index=attempt_index,
-                        provider=_PROVIDER_PROTOCOL,
+                        provider=self.provider_name,
                         model=self.model_name,
                         outcome=AttemptOutcome.FAILED,
                         latency_ms=int((perf_counter() - attempt_start) * 1000),
@@ -268,7 +294,7 @@ class OpenAIBackend(AbstractModelBackend):
         raise ProviderError(
             error_type=classify_openai_error(RuntimeError("provider call failed")).error_type,
             message="Provider call failed without a captured exception",
-            provider=_PROVIDER_PROTOCOL,
+            provider=self.provider_name,
             retryable=False,
             provider_attempts=tuple(attempts),
         )
