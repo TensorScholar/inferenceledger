@@ -17,6 +17,10 @@ class ProviderPricingCostEstimator:
         self.provider = provider
         self.cost_calculator = cost_calculator or CostCalculator()
 
+    def validate_model(self, model_id: str) -> None:
+        """Fail fast when a router candidate has no canonical pricing record."""
+        self.cost_calculator.pricing_table.get(provider=self.provider, model=model_id)
+
     def estimate(
         self,
         *,
