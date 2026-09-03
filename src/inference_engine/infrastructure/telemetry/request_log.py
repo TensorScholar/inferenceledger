@@ -27,6 +27,10 @@ class RequestTrace:
     cost evidence. In particular, a failed or retried provider call must not silently become a
     zero-cost execution. A locally rejected request with zero provider attempts may, however,
     carry complete zero-cost evidence.
+
+    `pricing_table_version` is a request-level compatibility field. Canonical pricing provenance
+    lives on each `ProviderAttempt`; request-level values such as ``unpriced`` or ``mixed`` must not
+    be interpreted as a pricing record identifier.
     """
 
     request_id: str
@@ -105,7 +109,7 @@ class RequestTrace:
         *,
         provider: str,
         response: InferenceResponse,
-        pricing_table_version: str = PRICING_TABLE_VERSION,
+        pricing_table_version: str | None = None,
     ) -> RequestTrace:
         attempts = response.provider_attempts
         execution_cost, cost_complete = _execution_cost_from_attempts(
@@ -122,7 +126,11 @@ class RequestTrace:
             completion_tokens=response.usage.completion_tokens,
             total_tokens=response.usage.total_tokens,
             estimated_cost_usd=execution_cost,
-            pricing_table_version=pricing_table_version,
+            pricing_table_version=(
+                pricing_table_version
+                if pricing_table_version is not None
+                else _request_pricing_context(attempts)
+            ),
             cache_hit=response.cache_info.hit,
             error_type=None,
             error_message=None,
@@ -142,7 +150,7 @@ class RequestTrace:
         model: str,
         latency_ms: int,
         error: ProviderError,
-        pricing_table_version: str = PRICING_TABLE_VERSION,
+        pricing_table_version: str | None = None,
     ) -> RequestTrace:
         attempts = error.provider_attempts
         execution_cost, cost_complete = _execution_cost_from_attempts(
@@ -159,7 +167,11 @@ class RequestTrace:
             completion_tokens=0,
             total_tokens=0,
             estimated_cost_usd=execution_cost,
-            pricing_table_version=pricing_table_version,
+            pricing_table_version=(
+                pricing_table_version
+                if pricing_table_version is not None
+                else _request_pricing_context(attempts)
+            ),
             cache_hit=False,
             error_type=error.error_type.value,
             error_message=error.message,
@@ -279,6 +291,27 @@ def _execution_cost_from_attempts(
     return None, False
 
 
+def _request_pricing_context(attempts: tuple[ProviderAttempt, ...]) -> str:
+    """Summarize attempt-level pricing without fabricating a request-level pricing record."""
+    if not attempts:
+        return PRICING_TABLE_VERSION
+
+    versions = sorted(
+        {
+            attempt.pricing_table_version
+            for attempt in attempts
+            if attempt.pricing_table_version is not None
+        }
+    )
+    if all(attempt.cost_is_known for attempt in attempts):
+        if len(versions) == 1:
+            return versions[0]
+        return "mixed"
+    if not versions:
+        return "unpriced"
+    return "incomplete:" + ",".join(versions)
+
+
 def _request_trace_from_dict(raw: dict[str, Any]) -> RequestTrace:
     raw = dict(raw)
     raw_attempts = raw.pop("provider_attempts", [])
@@ -296,9 +329,12 @@ def _request_trace_from_dict(raw: dict[str, Any]) -> RequestTrace:
             or legacy_attempt_count > 1
         )
     )
-    if legacy_ambiguous:
+    incomplete_attempt_evidence = attempts and not all(attempt.cost_is_known for attempt in attempts)
+    if legacy_ambiguous or incomplete_attempt_evidence:
         raw["cost_evidence_complete"] = False
         raw["estimated_cost_usd"] = None
+        if incomplete_attempt_evidence:
+            raw["pricing_table_version"] = _request_pricing_context(attempts)
     elif "cost_evidence_complete" not in raw:
         raw["cost_evidence_complete"] = True
 
@@ -306,6 +342,33 @@ def _request_trace_from_dict(raw: dict[str, Any]) -> RequestTrace:
 
 
 def _provider_attempt_from_dict(raw: dict[str, Any]) -> ProviderAttempt:
+    cost_evidence = CostEvidenceKind(
+        str(raw.get("cost_evidence", CostEvidenceKind.UNKNOWN.value))
+    )
+    pricing_table_version = _optional_str(raw.get("pricing_table_version"))
+    pricing_record_id = _optional_str(raw.get("pricing_record_id"))
+    pricing_observed_at = _optional_str(raw.get("pricing_observed_at"))
+    pricing_source_url = _optional_str(raw.get("pricing_source_url"))
+    calculated_cost_usd = _optional_float(raw.get("calculated_cost_usd"))
+
+    # PR #4 ledgers could contain calculated costs with only a table version. Under the stronger
+    # provenance contract those rows are not sufficient to substantiate a historical cost claim.
+    if cost_evidence == CostEvidenceKind.CALCULATED_FROM_USAGE and any(
+        value is None
+        for value in (
+            pricing_table_version,
+            pricing_record_id,
+            pricing_observed_at,
+            pricing_source_url,
+        )
+    ):
+        cost_evidence = CostEvidenceKind.UNKNOWN
+        calculated_cost_usd = None
+        pricing_table_version = None
+        pricing_record_id = None
+        pricing_observed_at = None
+        pricing_source_url = None
+
     return ProviderAttempt(
         attempt_index=int(raw["attempt_index"]),
         provider=str(raw["provider"]),
@@ -316,9 +379,12 @@ def _provider_attempt_from_dict(raw: dict[str, Any]) -> ProviderAttempt:
         completion_tokens=_optional_int(raw.get("completion_tokens")),
         total_tokens=_optional_int(raw.get("total_tokens")),
         cached_tokens=_optional_int(raw.get("cached_tokens")),
-        calculated_cost_usd=_optional_float(raw.get("calculated_cost_usd")),
-        cost_evidence=CostEvidenceKind(str(raw.get("cost_evidence", CostEvidenceKind.UNKNOWN.value))),
-        pricing_table_version=_optional_str(raw.get("pricing_table_version")),
+        calculated_cost_usd=calculated_cost_usd,
+        cost_evidence=cost_evidence,
+        pricing_table_version=pricing_table_version,
+        pricing_record_id=pricing_record_id,
+        pricing_observed_at=pricing_observed_at,
+        pricing_source_url=pricing_source_url,
         error_type=_optional_str(raw.get("error_type")),
         status_code=_optional_int(raw.get("status_code")),
     )
