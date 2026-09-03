@@ -13,6 +13,7 @@ from ..models.routing import (
 )
 from .base import AbstractRouter
 from .complexity import ComplexityEstimator
+from .cost_estimator import RoutingCostEstimator
 
 
 @dataclass(frozen=True)
@@ -54,10 +55,12 @@ class PolicyRouter(AbstractRouter):
         self,
         models: list[ModelConfig],
         complexity_estimator: ComplexityEstimator,
+        cost_estimator: RoutingCostEstimator,
         config: PolicyRouterConfig | None = None,
     ) -> None:
         self.models = {model.id: model for model in models}
         self.complexity_estimator = complexity_estimator
+        self.cost_estimator = cost_estimator
         self.config = config or PolicyRouterConfig()
 
     async def route(self, request: InferenceRequest) -> RoutingDecision:
@@ -97,9 +100,10 @@ class PolicyRouter(AbstractRouter):
             candidates.append(
                 _Candidate(
                     model=model,
-                    estimated_cost=model.calculate_cost(
-                        request.estimated_input_tokens,
-                        request.parameters.max_tokens,
+                    estimated_cost=self.cost_estimator.estimate(
+                        model_id=model.id,
+                        input_tokens=request.estimated_input_tokens,
+                        output_tokens=request.parameters.max_tokens,
                     ),
                     estimated_latency_ms=model.avg_latency_ms,
                     estimated_quality_score=_estimate_quality(model.tier, complexity),
