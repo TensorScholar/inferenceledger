@@ -20,7 +20,7 @@ from inference_engine.benchmarking.harness import (
     write_report,
 )
 from inference_engine.benchmarking.sqlite_ledger import SQLiteBenchmarkLedger
-from inference_engine.domain.cost.pricing import DEFAULT_PRICING, UnknownModelPricingError
+from inference_engine.domain.cost.pricing import PricingTable, UnknownModelPricingError
 from inference_engine.domain.models.request import InferenceRequest, ModelParameters
 from inference_engine.domain.models.routing import ModelConfig, ModelTier, RoutingStrategy
 from inference_engine.domain.routing.baseline import BaselineRouter
@@ -74,7 +74,14 @@ def main() -> int:
 
 def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--workload", default="benchmarks/workloads/smoke.jsonl")
-    parser.add_argument("--provider", choices=["openai"], default="openai")
+    parser.add_argument(
+        "--provider",
+        choices=["openai"],
+        default="openai",
+        help="Transport adapter. Billing and execution identity are configured separately.",
+    )
+    parser.add_argument("--execution-provider", default=None)
+    parser.add_argument("--pricing-provider", default=None)
     parser.add_argument("--model", default="gpt-4o-mini")
     parser.add_argument(
         "--strategy",
@@ -104,8 +111,11 @@ def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
 async def _run(args: argparse.Namespace) -> int:
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
-        print("OPENAI_API_KEY is required for provider=openai")
+        print("OPENAI_API_KEY is required for the openai-compatible benchmark transport")
         return 2
+
+    execution_provider = _resolve_execution_provider(args)
+    pricing_provider = _resolve_pricing_provider(args)
 
     workload_path = Path(args.workload)
     ledger_path = Path(args.ledger_path)
@@ -127,6 +137,8 @@ async def _run(args: argparse.Namespace) -> int:
                 base_url=args.base_url,
                 timeout_seconds=args.timeout_seconds,
                 retry_policy=RetryPolicy(max_attempts=2),
+                provider_name=execution_provider,
+                pricing_provider=pricing_provider,
             )
         return backends[model_name]
 
@@ -158,7 +170,7 @@ async def _run(args: argparse.Namespace) -> int:
             route_log.append(route_trace)
             route_traces.append(route_trace)
             response = await backend_for(selected_model).infer(request)
-            trace = RequestTrace.from_response(provider=args.provider, response=response)
+            trace = RequestTrace.from_response(provider=execution_provider, response=response)
             eval_result = evaluate_text(response.text, item.eval_spec)
             if eval_result is not None:
                 trace = replace(
@@ -178,7 +190,7 @@ async def _run(args: argparse.Namespace) -> int:
             route_traces.append(route_trace)
             trace = RequestTrace(
                 request_id=str(request.id),
-                provider=args.provider,
+                provider=execution_provider,
                 model=selected_model,
                 latency_ms=0,
                 prompt_tokens=0,
@@ -197,7 +209,7 @@ async def _run(args: argparse.Namespace) -> int:
         except ProviderError as exc:
             trace = RequestTrace.from_error(
                 request_id=request.id,
-                provider=args.provider,
+                provider=execution_provider,
                 model=selected_model,
                 latency_ms=int((perf_counter() - started) * 1000),
                 error=exc,
@@ -205,10 +217,10 @@ async def _run(args: argparse.Namespace) -> int:
         except Exception as exc:
             trace = RequestTrace.from_error(
                 request_id=request.id,
-                provider=args.provider,
+                provider=execution_provider,
                 model=selected_model,
                 latency_ms=int((perf_counter() - started) * 1000),
-                error=classify_openai_error(exc),
+                error=replace(classify_openai_error(exc), provider=execution_provider),
             )
         request_log.append(trace)
         traces.append(trace)
@@ -216,7 +228,7 @@ async def _run(args: argparse.Namespace) -> int:
     report = summarize_traces(
         workload_path=workload_path,
         strategy=args.strategy,
-        provider=args.provider,
+        provider=execution_provider,
         model=report_model,
         ledger_path=ledger_path,
         traces=traces,
@@ -333,18 +345,19 @@ def _usage_summary(args: argparse.Namespace) -> int:
 
 def _build_router(args: argparse.Namespace) -> BaselineRouter | PolicyRouter:
     strategy = RoutingStrategy(args.strategy)
+    pricing_provider = _resolve_pricing_provider(args)
     if strategy == RoutingStrategy.SINGLE_MODEL:
         return BaselineRouter(
-            [_model_config(args.model, ModelTier.STANDARD)],
+            [_model_config(args.model, ModelTier.STANDARD, pricing_provider)],
             ComplexityEstimator(),
             mode=strategy,
             single_model_id=args.model,
         )
 
     models = [
-        _model_config(args.economy_model, ModelTier.ECONOMY),
-        _model_config(args.standard_model, ModelTier.STANDARD),
-        _model_config(args.premium_model, ModelTier.PREMIUM),
+        _model_config(args.economy_model, ModelTier.ECONOMY, pricing_provider),
+        _model_config(args.standard_model, ModelTier.STANDARD, pricing_provider),
+        _model_config(args.premium_model, ModelTier.PREMIUM, pricing_provider),
     ]
     if strategy == RoutingStrategy.POLICY:
         return PolicyRouter(
@@ -367,12 +380,12 @@ def _build_router(args: argparse.Namespace) -> BaselineRouter | PolicyRouter:
     )
 
 
-def _model_config(model_name: str, tier: ModelTier) -> ModelConfig:
+def _model_config(model_name: str, tier: ModelTier, pricing_provider: str = "openai") -> ModelConfig:
     try:
-        pricing = DEFAULT_PRICING[model_name]
-    except KeyError as exc:
+        pricing = PricingTable().get(provider=pricing_provider, model=model_name)
+    except UnknownModelPricingError as exc:
         raise UnknownModelPricingError(
-            f"Benchmark model '{model_name}' is missing from the pricing table"
+            f"Benchmark model '{model_name}' has no pricing for provider '{pricing_provider}'"
         ) from exc
     return ModelConfig(
         id=model_name,
@@ -381,6 +394,28 @@ def _model_config(model_name: str, tier: ModelTier) -> ModelConfig:
         max_context_length=128_000,
         cost_per_1k_input_tokens=pricing.input_per_million / 1000,
         cost_per_1k_output_tokens=pricing.output_per_million / 1000,
+    )
+
+
+def _resolve_execution_provider(args: argparse.Namespace) -> str:
+    explicit = getattr(args, "execution_provider", None)
+    if explicit:
+        return str(explicit)
+    if getattr(args, "base_url", None) is None:
+        return "openai"
+    raise ValueError(
+        "custom --base-url benchmark requires --execution-provider; protocol compatibility is not provider identity"
+    )
+
+
+def _resolve_pricing_provider(args: argparse.Namespace) -> str:
+    explicit = getattr(args, "pricing_provider", None)
+    if explicit:
+        return str(explicit)
+    if getattr(args, "base_url", None) is None:
+        return "openai"
+    raise ValueError(
+        "custom --base-url benchmark requires --pricing-provider; InferenceLedger will not guess billing identity"
     )
 
 
