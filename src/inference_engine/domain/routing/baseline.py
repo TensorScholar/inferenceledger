@@ -10,6 +10,7 @@ from ..models.routing import (
 )
 from .base import AbstractRouter
 from .complexity import ComplexityEstimator
+from .cost_estimator import RoutingCostEstimator
 
 
 class BaselineRoutingModeError(ValueError):
@@ -23,6 +24,7 @@ class BaselineRouter(AbstractRouter):
         self,
         models: list[ModelConfig],
         complexity_estimator: ComplexityEstimator,
+        cost_estimator: RoutingCostEstimator,
         *,
         mode: RoutingStrategy,
         single_model_id: str | None = None,
@@ -31,6 +33,7 @@ class BaselineRouter(AbstractRouter):
             raise BaselineRoutingModeError(f"Unsupported baseline routing mode: {mode}")
         self.models = {model.id: model for model in models}
         self.complexity_estimator = complexity_estimator
+        self.cost_estimator = cost_estimator
         self.mode = mode
         self.single_model_id = single_model_id
 
@@ -52,7 +55,7 @@ class BaselineRouter(AbstractRouter):
 
     async def _rule_based_decision(self, request: InferenceRequest) -> RoutingDecision:
         complexity = await self.complexity_estimator.estimate(request)
-        selected = self._cheapest_model_for_tier(complexity.recommended_tier)
+        selected = self._cheapest_model_for_tier(complexity.recommended_tier, request)
         return self._decision(
             request=request,
             selected=selected,
@@ -73,7 +76,11 @@ class BaselineRouter(AbstractRouter):
             raise BaselineRoutingModeError(f"Configured model is not available: {model_id}")
         return model
 
-    def _cheapest_model_for_tier(self, tier: ModelTier) -> ModelConfig:
+    def _cheapest_model_for_tier(
+        self,
+        tier: ModelTier,
+        request: InferenceRequest,
+    ) -> ModelConfig:
         candidates = [
             model
             for model in self.models.values()
@@ -83,7 +90,14 @@ class BaselineRouter(AbstractRouter):
             raise BaselineRoutingModeError(f"No available model can satisfy tier {tier.value}")
         return min(
             candidates,
-            key=lambda model: model.cost_per_1k_input_tokens + model.cost_per_1k_output_tokens,
+            key=lambda model: self._estimate_cost(model, request),
+        )
+
+    def _estimate_cost(self, model: ModelConfig, request: InferenceRequest) -> float:
+        return self.cost_estimator.estimate(
+            model_id=model.id,
+            input_tokens=request.estimated_input_tokens,
+            output_tokens=request.parameters.max_tokens,
         )
 
     def _decision(
@@ -95,10 +109,7 @@ class BaselineRouter(AbstractRouter):
         reason: str,
         complexity_estimate: ComplexityEstimate | None = None,
     ) -> RoutingDecision:
-        estimated_cost = selected.calculate_cost(
-            request.estimated_input_tokens,
-            request.parameters.max_tokens,
-        )
+        estimated_cost = self._estimate_cost(selected, request)
         fallback_models = [
             model for model in self.models.values() if model.is_available and model.id != selected.id
         ]
