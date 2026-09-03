@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import structlog
 
+from ..cost.pricing import PricingQuote
 from ..models.request import InferenceRequest
 from ..models.routing import (
     ComplexityEstimate,
@@ -19,7 +20,7 @@ logger = structlog.get_logger()
 
 
 class CostAwareRouter(AbstractRouter):
-    """Route to the lowest-scoring capable model using request-specific canonical cost estimates."""
+    """Route to the lowest-scoring capable model using request-specific canonical cost quotes."""
 
     def __init__(
         self,
@@ -45,7 +46,7 @@ class CostAwareRouter(AbstractRouter):
         if not available:
             raise RuntimeError("No available model can satisfy request capability constraints")
 
-        selected, estimated_cost, candidate_costs = self._select_optimal_model(
+        selected, cost_quote, candidate_quotes = self._select_optimal_model(
             available,
             request,
             complexity,
@@ -54,7 +55,11 @@ class CostAwareRouter(AbstractRouter):
             model
             for model in sorted(
                 available,
-                key=lambda model: (candidate_costs[model.id], model.avg_latency_ms, model.id),
+                key=lambda model: (
+                    candidate_quotes[model.id].amount_usd,
+                    model.avg_latency_ms,
+                    model.id,
+                ),
             )
             if model.id != selected.id
         ][:3]
@@ -64,13 +69,14 @@ class CostAwareRouter(AbstractRouter):
             fallback_models=fallback_models,
             strategy=RoutingStrategy.COST_OPTIMAL,
             complexity_estimate=complexity,
-            estimated_cost=estimated_cost,
+            estimated_cost=cost_quote.amount_usd,
             estimated_latency_ms=selected.avg_latency_ms,
             estimated_quality_score=self._estimate_quality(selected, complexity),
             decision_reason=self._generate_reason(selected, complexity),
+            cost_quote=cost_quote,
             considered_models=sorted(model.id for model in available),
         )
-        logger.debug("routing_decision", selected_model=selected.id, cost=estimated_cost)
+        logger.debug("routing_decision", selected_model=selected.id, cost=cost_quote.amount_usd)
         return decision
 
     def _can_handle_request(
@@ -87,20 +93,21 @@ class CostAwareRouter(AbstractRouter):
         models: list[ModelConfig],
         request: InferenceRequest,
         complexity: ComplexityEstimate,
-    ) -> tuple[ModelConfig, float, dict[str, float]]:
-        cost_by_model = {
-            model.id: self.cost_estimator.estimate(
+    ) -> tuple[ModelConfig, PricingQuote, dict[str, PricingQuote]]:
+        quote_by_model = {
+            model.id: self.cost_estimator.quote(
                 model_id=model.id,
                 input_tokens=request.estimated_input_tokens,
                 output_tokens=request.parameters.max_tokens,
             )
             for model in models
         }
-        min_cost = min(cost_by_model.values())
-        max_cost = max(cost_by_model.values())
+        costs = [quote.amount_usd for quote in quote_by_model.values()]
+        min_cost = min(costs)
+        max_cost = max(costs)
         scored: list[tuple[float, str, ModelConfig]] = []
         for model in models:
-            normalized_cost = _normalize(cost_by_model[model.id], min_cost, max_cost)
+            normalized_cost = _normalize(quote_by_model[model.id].amount_usd, min_cost, max_cost)
             quality_score = self._estimate_quality(model, complexity)
             score = self.cost_weight * normalized_cost + (1 - self.cost_weight) * (
                 1 - quality_score
@@ -108,7 +115,7 @@ class CostAwareRouter(AbstractRouter):
             score += model.current_load * 0.2
             scored.append((score, model.id, model))
         selected = min(scored, key=lambda item: (item[0], item[1]))[2]
-        return selected, cost_by_model[selected.id], cost_by_model
+        return selected, quote_by_model[selected.id], quote_by_model
 
     def _estimate_quality(self, model: ModelConfig, complexity: ComplexityEstimate) -> float:
         tier_scores = {
