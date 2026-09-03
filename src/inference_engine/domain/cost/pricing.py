@@ -48,6 +48,24 @@ class PricingQuote:
     pricing_observed_at: date
     pricing_source_url: str
 
+    def __post_init__(self) -> None:
+        if self.amount_usd < 0:
+            raise ValueError("pricing quote amount_usd must be non-negative")
+        string_fields = (
+            self.provider,
+            self.model,
+            self.pricing_record_id,
+            self.pricing_table_version,
+            self.pricing_source_url,
+        )
+        if any(not value.strip() for value in string_fields):
+            raise ValueError("pricing quote provenance fields must be non-empty")
+        expected_record_id = (
+            f"{self.provider}:{self.model}:{self.pricing_observed_at.isoformat()}"
+        )
+        if self.pricing_record_id != expected_record_id:
+            raise ValueError("pricing_record_id must bind provider, model, and observation date")
+
 
 _OPENAI_MODEL_DOC = "https://developers.openai.com/api/docs/models"
 
