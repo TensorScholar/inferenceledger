@@ -102,11 +102,11 @@ class BaselineRouter(AbstractRouter):
             )
         return min(
             candidates,
-            key=lambda model: self._estimate_cost(model, request),
+            key=lambda model: self._quote_cost(model, request).amount_usd,
         )
 
-    def _estimate_cost(self, model: ModelConfig, request: InferenceRequest) -> float:
-        return self.cost_estimator.estimate(
+    def _quote_cost(self, model: ModelConfig, request: InferenceRequest):
+        return self.cost_estimator.quote(
             model_id=model.id,
             input_tokens=request.estimated_input_tokens,
             output_tokens=request.parameters.max_tokens,
@@ -121,7 +121,7 @@ class BaselineRouter(AbstractRouter):
         reason: str,
         complexity_estimate: ComplexityEstimate | None = None,
     ) -> RoutingDecision:
-        estimated_cost = self._estimate_cost(selected, request)
+        cost_quote = self._quote_cost(selected, request)
         eligible_models = self._eligible_models(request)
         fallback_models = [model for model in eligible_models if model.id != selected.id]
         return RoutingDecision(
@@ -130,10 +130,11 @@ class BaselineRouter(AbstractRouter):
             fallback_models=fallback_models,
             strategy=strategy,
             complexity_estimate=complexity_estimate,
-            estimated_cost=estimated_cost,
+            estimated_cost=cost_quote.amount_usd,
             estimated_latency_ms=selected.avg_latency_ms,
             estimated_quality_score=_tier_quality(selected.tier),
             decision_reason=reason,
+            cost_quote=cost_quote,
             considered_models=sorted(model.id for model in eligible_models),
         )
 
