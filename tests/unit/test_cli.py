@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 from datetime import date
-from uuid import uuid4
 
 import pytest
 
