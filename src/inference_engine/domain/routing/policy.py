@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ..cost.pricing import PricingQuote
 from ..models.request import InferenceRequest
 from ..models.routing import (
     ComplexityEstimate,
@@ -44,13 +45,17 @@ class PolicyRouterConfig:
 @dataclass(frozen=True)
 class _Candidate:
     model: ModelConfig
-    estimated_cost: float
+    cost_quote: PricingQuote
     estimated_latency_ms: int
     estimated_quality_score: float
 
+    @property
+    def estimated_cost(self) -> float:
+        return self.cost_quote.amount_usd
+
 
 class PolicyRouter(AbstractRouter):
-    """SLO-aware deterministic router with auditable reason codes."""
+    """SLO-aware deterministic router with auditable reason codes and cost quotes."""
 
     def __init__(
         self,
@@ -100,7 +105,7 @@ class PolicyRouter(AbstractRouter):
             candidates.append(
                 _Candidate(
                     model=model,
-                    estimated_cost=self.cost_estimator.estimate(
+                    cost_quote=self.cost_estimator.quote(
                         model_id=model.id,
                         input_tokens=request.estimated_input_tokens,
                         output_tokens=request.parameters.max_tokens,
@@ -240,6 +245,7 @@ class PolicyRouter(AbstractRouter):
             estimated_latency_ms=selected.estimated_latency_ms,
             estimated_quality_score=selected.estimated_quality_score,
             decision_reason=reason.value,
+            cost_quote=selected.cost_quote,
             fallback_models=fallback_models,
             considered_models=[candidate.model.id for candidate in candidates],
         )
