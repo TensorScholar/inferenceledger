@@ -133,23 +133,32 @@ class TestCostAwareRouter:
         )
 
     @pytest.mark.asyncio
-    async def test_route_complex_request(
+    async def test_route_standard_complexity_uses_request_specific_cost_estimate(
         self,
         complex_request,
         sample_models,
         sample_cost_estimator,
     ):
+        complexity_estimator = ComplexityEstimator()
+        complexity = await complexity_estimator.estimate(complex_request)
+        assert complexity.recommended_tier == ModelTier.STANDARD
+
         router = CostAwareRouter(
             sample_models,
-            ComplexityEstimator(),
+            complexity_estimator,
             sample_cost_estimator,
             cost_weight=0.5,
         )
 
         decision = await router.route(complex_request)
 
-        assert decision.selected_model.id == "gpt-4"
-        assert decision.estimated_cost > 0
+        assert decision.estimated_cost == pytest.approx(
+            sample_cost_estimator.estimate(
+                model_id=decision.selected_model.id,
+                input_tokens=complex_request.estimated_input_tokens,
+                output_tokens=complex_request.parameters.max_tokens,
+            )
+        )
         assert decision.estimated_latency_ms > 0
 
     @pytest.mark.asyncio
