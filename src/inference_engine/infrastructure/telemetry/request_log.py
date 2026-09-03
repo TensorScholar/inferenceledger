@@ -29,8 +29,8 @@ class RequestTrace:
     carry complete zero-cost evidence.
 
     `pricing_table_version` is a request-level compatibility field. Canonical pricing provenance
-    lives on each `ProviderAttempt`; request-level values such as ``unpriced`` or ``mixed`` must not
-    be interpreted as a pricing record identifier.
+    lives on each `ProviderAttempt`; request-level values such as ``unpriced``, ``not_charged``,
+    or ``mixed`` must not be interpreted as a pricing record identifier.
     """
 
     request_id: str
@@ -117,6 +117,12 @@ class RequestTrace:
             fallback_final_cost=response.usage.cost_usd,
             legacy_attempt_count=response.provider_attempt_count,
         )
+        if pricing_table_version is not None:
+            request_pricing_context = pricing_table_version
+        elif response.provider_attempt_count == 0:
+            request_pricing_context = "not_charged"
+        else:
+            request_pricing_context = _request_pricing_context(attempts)
         return cls(
             request_id=str(response.request_id),
             provider=provider,
@@ -126,11 +132,7 @@ class RequestTrace:
             completion_tokens=response.usage.completion_tokens,
             total_tokens=response.usage.total_tokens,
             estimated_cost_usd=execution_cost,
-            pricing_table_version=(
-                pricing_table_version
-                if pricing_table_version is not None
-                else _request_pricing_context(attempts)
-            ),
+            pricing_table_version=request_pricing_context,
             cache_hit=response.cache_info.hit,
             error_type=None,
             error_message=None,
@@ -351,8 +353,6 @@ def _provider_attempt_from_dict(raw: dict[str, Any]) -> ProviderAttempt:
     pricing_source_url = _optional_str(raw.get("pricing_source_url"))
     calculated_cost_usd = _optional_float(raw.get("calculated_cost_usd"))
 
-    # PR #4 ledgers could contain calculated costs with only a table version. Under the stronger
-    # provenance contract those rows are not sufficient to substantiate a historical cost claim.
     if cost_evidence == CostEvidenceKind.CALCULATED_FROM_USAGE and any(
         value is None
         for value in (
