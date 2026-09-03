@@ -30,7 +30,7 @@ class InferenceResponseBody(BaseModel):
     completion_tokens: int
     total_tokens: int
     cached_tokens: int
-    cost_usd: float
+    final_attempt_cost_usd: float | None
     provider_attempt_count: int
     provider_retry_count: int
 
@@ -88,7 +88,7 @@ async def create_inference(payload: InferenceRequestBody) -> InferenceResponseBo
         completion_tokens=response.usage.completion_tokens,
         total_tokens=response.usage.total_tokens,
         cached_tokens=response.usage.cached_tokens,
-        cost_usd=response.usage.cost_usd,
+        final_attempt_cost_usd=response.usage.cost_usd,
         provider_attempt_count=response.provider_attempt_count,
         provider_retry_count=response.provider_retry_count,
     )
