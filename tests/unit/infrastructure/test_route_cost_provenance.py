@@ -7,7 +7,12 @@ from uuid import UUID
 import pytest
 
 from inference_engine.domain.cost.pricing import PricingQuote
-from inference_engine.domain.models.routing import ModelConfig, ModelTier, RoutingDecision, RoutingStrategy
+from inference_engine.domain.models.routing import (
+    ModelConfig,
+    ModelTier,
+    RoutingDecision,
+    RoutingStrategy,
+)
 from inference_engine.infrastructure.telemetry.request_log import JsonlRouteLog, RouteTrace
 
 
