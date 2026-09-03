@@ -139,43 +139,63 @@ def test_benchmark_build_router_supports_policy_strategy() -> None:
     assert router.config.min_quality_score == 0.70
 
 
+def test_custom_benchmark_endpoint_requires_explicit_provider_identities() -> None:
+    args = argparse.Namespace(base_url="https://provider.example/v1")
+
+    with pytest.raises(ValueError, match="execution-provider"):
+        benchmark_script._resolve_execution_provider(args)
+    with pytest.raises(ValueError, match="pricing-provider"):
+        benchmark_script._resolve_pricing_provider(args)
+
+
+def _priced_attempt(
+    *,
+    attempt_index: int,
+    outcome: AttemptOutcome,
+    cost: float,
+    error_type: str | None = None,
+    status_code: int | None = None,
+) -> ProviderAttempt:
+    return ProviderAttempt(
+        attempt_index=attempt_index,
+        provider="test-provider",
+        model="test-model",
+        outcome=outcome,
+        latency_ms=20,
+        prompt_tokens=4 if attempt_index == 1 else 6,
+        completion_tokens=2 if attempt_index == 1 else 3,
+        total_tokens=6 if attempt_index == 1 else 9,
+        cached_tokens=0,
+        calculated_cost_usd=cost,
+        cost_evidence=CostEvidenceKind.CALCULATED_FROM_USAGE,
+        pricing_table_version="test",
+        pricing_record_id="test-provider:test-model:2026-09-03",
+        pricing_observed_at="2026-09-03",
+        pricing_source_url="https://pricing.example/test-model",
+        error_type=error_type,
+        status_code=status_code,
+    )
+
+
 def test_benchmark_usage_summary_cli_writes_provider_usage_json(tmp_path) -> None:
     ledger = SQLiteBenchmarkLedger(tmp_path / "ledger.sqlite3")
     attempts = (
-        ProviderAttempt(
+        _priced_attempt(
             attempt_index=1,
-            provider="openai-compatible",
-            model="test-model",
             outcome=AttemptOutcome.FAILED,
-            latency_ms=20,
-            prompt_tokens=4,
-            completion_tokens=2,
-            total_tokens=6,
-            cached_tokens=0,
-            calculated_cost_usd=0.0004,
-            cost_evidence=CostEvidenceKind.CALCULATED_FROM_USAGE,
-            pricing_table_version="test",
+            cost=0.0004,
             error_type="server_error",
             status_code=500,
         ),
-        ProviderAttempt(
+        _priced_attempt(
             attempt_index=2,
-            provider="openai-compatible",
-            model="test-model",
             outcome=AttemptOutcome.SUCCEEDED,
-            latency_ms=30,
-            prompt_tokens=6,
-            completion_tokens=3,
-            total_tokens=9,
-            cached_tokens=0,
-            calculated_cost_usd=0.0006,
-            cost_evidence=CostEvidenceKind.CALCULATED_FROM_USAGE,
-            pricing_table_version="test",
+            cost=0.0006,
         ),
     )
     trace = RequestTrace(
         request_id="request-1",
-        provider="openai",
+        provider="test-provider",
         model="test-model",
         latency_ms=123,
         prompt_tokens=10,
@@ -192,7 +212,7 @@ def test_benchmark_usage_summary_cli_writes_provider_usage_json(tmp_path) -> Non
     report = summarize_traces(
         workload_path=tmp_path / "workload.jsonl",
         strategy="single_model",
-        provider="openai",
+        provider="test-provider",
         model="test-model",
         ledger_path=tmp_path / "ledger.jsonl",
         traces=[trace],
