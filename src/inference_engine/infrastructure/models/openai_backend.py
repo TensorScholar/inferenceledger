@@ -56,10 +56,10 @@ class OpenAIBackend(AbstractModelBackend):
     """OpenAI-compatible chat completions backend.
 
     Transport protocol, execution-provider identity, and billing identity are deliberately separate.
-    Direct OpenAI calls can safely default both identities to ``openai``. A custom ``base_url`` is
+    Direct OpenAI calls safely default both identities to ``openai``. A custom ``base_url`` is
     unpriced by default and records an unknown compatible provider unless the caller supplies an
-    explicit provider identity. Pricing for a custom endpoint is enabled only when both execution
-    and pricing identities are explicit.
+    explicit provider identity. Until a dedicated billing-mapping abstraction exists, a calculated
+    price is allowed only when execution-provider and pricing-provider identities are identical.
     """
 
     def __init__(
@@ -85,6 +85,24 @@ class OpenAIBackend(AbstractModelBackend):
                 "custom OpenAI-compatible pricing requires an explicit provider_name as well as pricing_provider"
             )
 
+        resolved_provider = provider_name or (
+            "openai" if base_url is None else _UNKNOWN_COMPATIBLE_PROVIDER
+        )
+        if pricing_provider is not None:
+            resolved_pricing_provider = pricing_provider
+        elif base_url is None and resolved_provider == "openai":
+            resolved_pricing_provider = "openai"
+        else:
+            resolved_pricing_provider = None
+
+        if (
+            resolved_pricing_provider is not None
+            and resolved_pricing_provider != resolved_provider
+        ):
+            raise ValueError(
+                "pricing_provider must match provider_name until an explicit billing mapping is modeled"
+            )
+
         self.client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
@@ -95,12 +113,8 @@ class OpenAIBackend(AbstractModelBackend):
         self.retry_policy = retry_policy or RetryPolicy()
         self.cost_calculator = cost_calculator or CostCalculator()
         self.provider_protocol = _PROVIDER_PROTOCOL
-        self.provider_name = provider_name or (
-            "openai" if base_url is None else _UNKNOWN_COMPATIBLE_PROVIDER
-        )
-        self.pricing_provider = pricing_provider if pricing_provider is not None else (
-            "openai" if base_url is None else None
-        )
+        self.provider_name = resolved_provider
+        self.pricing_provider = resolved_pricing_provider
 
     @property
     def model_name(self) -> str:
@@ -317,6 +331,8 @@ def _attempt_with_usage(
             total_tokens=total_tokens,
             cached_tokens=cached_tokens,
         )
+    if quote.provider != attempt.provider:
+        raise ValueError("pricing quote provider must match observed execution provider")
     return replace(
         attempt,
         prompt_tokens=prompt_tokens,
