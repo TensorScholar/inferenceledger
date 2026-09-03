@@ -20,7 +20,7 @@ from inference_engine.benchmarking.harness import (
     write_report,
 )
 from inference_engine.benchmarking.sqlite_ledger import SQLiteBenchmarkLedger
-from inference_engine.domain.cost.pricing import PricingTable, UnknownModelPricingError
+from inference_engine.domain.cost.routing_estimator import ProviderPricingCostEstimator
 from inference_engine.domain.models.request import InferenceRequest, ModelParameters
 from inference_engine.domain.models.routing import ModelConfig, ModelTier, RoutingStrategy
 from inference_engine.domain.routing.baseline import BaselineRouter
@@ -116,6 +116,10 @@ async def _run(args: argparse.Namespace) -> int:
 
     execution_provider = _resolve_execution_provider(args)
     pricing_provider = _resolve_pricing_provider(args)
+    if execution_provider != pricing_provider:
+        raise ValueError(
+            "benchmark execution_provider and pricing_provider must match until explicit billing mappings exist"
+        )
 
     workload_path = Path(args.workload)
     ledger_path = Path(args.ledger_path)
@@ -346,23 +350,28 @@ def _usage_summary(args: argparse.Namespace) -> int:
 def _build_router(args: argparse.Namespace) -> BaselineRouter | PolicyRouter:
     strategy = RoutingStrategy(args.strategy)
     pricing_provider = _resolve_pricing_provider(args)
+    cost_estimator = ProviderPricingCostEstimator(provider=pricing_provider)
+
     if strategy == RoutingStrategy.SINGLE_MODEL:
+        model = _model_config(args.model, ModelTier.STANDARD, cost_estimator)
         return BaselineRouter(
-            [_model_config(args.model, ModelTier.STANDARD, pricing_provider)],
+            [model],
             ComplexityEstimator(),
+            cost_estimator,
             mode=strategy,
             single_model_id=args.model,
         )
 
     models = [
-        _model_config(args.economy_model, ModelTier.ECONOMY, pricing_provider),
-        _model_config(args.standard_model, ModelTier.STANDARD, pricing_provider),
-        _model_config(args.premium_model, ModelTier.PREMIUM, pricing_provider),
+        _model_config(args.economy_model, ModelTier.ECONOMY, cost_estimator),
+        _model_config(args.standard_model, ModelTier.STANDARD, cost_estimator),
+        _model_config(args.premium_model, ModelTier.PREMIUM, cost_estimator),
     ]
     if strategy == RoutingStrategy.POLICY:
         return PolicyRouter(
             models,
             ComplexityEstimator(),
+            cost_estimator,
             PolicyRouterConfig(
                 max_estimated_cost_usd=args.max_estimated_cost_usd,
                 latency_slo_ms=args.policy_latency_slo_ms,
@@ -375,25 +384,23 @@ def _build_router(args: argparse.Namespace) -> BaselineRouter | PolicyRouter:
     return BaselineRouter(
         models,
         ComplexityEstimator(),
+        cost_estimator,
         mode=strategy,
         single_model_id=args.model if strategy == RoutingStrategy.SINGLE_MODEL else None,
     )
 
 
-def _model_config(model_name: str, tier: ModelTier, pricing_provider: str = "openai") -> ModelConfig:
-    try:
-        pricing = PricingTable().get(provider=pricing_provider, model=model_name)
-    except UnknownModelPricingError as exc:
-        raise UnknownModelPricingError(
-            f"Benchmark model '{model_name}' has no pricing for provider '{pricing_provider}'"
-        ) from exc
+def _model_config(
+    model_name: str,
+    tier: ModelTier,
+    cost_estimator: ProviderPricingCostEstimator,
+) -> ModelConfig:
+    cost_estimator.validate_model(model_name)
     return ModelConfig(
         id=model_name,
         name=model_name,
         tier=tier,
         max_context_length=128_000,
-        cost_per_1k_input_tokens=pricing.input_per_million / 1000,
-        cost_per_1k_output_tokens=pricing.output_per_million / 1000,
     )
 
 

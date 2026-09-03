@@ -1,4 +1,5 @@
 """Unit tests for routing strategies."""
+
 import pytest
 
 from inference_engine.domain.models.request import InferenceRequest, ModelParameters
@@ -15,32 +16,56 @@ from inference_engine.domain.routing.load_balanced import LoadBalancedRouter
 from inference_engine.domain.routing.policy import PolicyRouter, PolicyRouterConfig
 
 
+class FakeCostEstimator:
+    """Deterministic test-only tariff source; model metadata contains no monetary rates."""
+
+    def __init__(self, cost_per_1k_total_tokens: dict[str, float]) -> None:
+        self.cost_per_1k_total_tokens = cost_per_1k_total_tokens
+
+    def estimate(
+        self,
+        *,
+        model_id: str,
+        input_tokens: int,
+        output_tokens: int,
+    ) -> float:
+        return (
+            (input_tokens + output_tokens)
+            / 1000
+            * self.cost_per_1k_total_tokens[model_id]
+        )
+
+
 @pytest.fixture
 def sample_models() -> list[ModelConfig]:
-    """Create sample model configurations."""
     return [
         ModelConfig(
             id="gpt-4",
             name="GPT-4",
             tier=ModelTier.PREMIUM,
             max_context_length=8192,
-            cost_per_1k_input_tokens=0.03,
-            cost_per_1k_output_tokens=0.06,
         ),
         ModelConfig(
             id="gpt-3.5",
             name="GPT-3.5 Turbo",
             tier=ModelTier.ECONOMY,
             max_context_length=4096,
-            cost_per_1k_input_tokens=0.0015,
-            cost_per_1k_output_tokens=0.002,
         ),
     ]
 
 
 @pytest.fixture
+def sample_cost_estimator() -> FakeCostEstimator:
+    return FakeCostEstimator(
+        {
+            "gpt-4": 0.09,
+            "gpt-3.5": 0.0035,
+        }
+    )
+
+
+@pytest.fixture
 def simple_request() -> InferenceRequest:
-    """Create simple request."""
     return InferenceRequest(
         prompt="Hello world",
         parameters=ModelParameters(max_tokens=10),
@@ -49,7 +74,6 @@ def simple_request() -> InferenceRequest:
 
 @pytest.fixture
 def complex_request() -> InferenceRequest:
-    """Create complex request."""
     return InferenceRequest(
         prompt="Analyze quantum computing and explain how superposition works in detail",
         parameters=ModelParameters(max_tokens=500),
@@ -57,11 +81,8 @@ def complex_request() -> InferenceRequest:
 
 
 class TestComplexityEstimator:
-    """Tests for ComplexityEstimator."""
-
     @pytest.mark.asyncio
     async def test_simple_query(self, simple_request):
-        """Test simple query has low complexity."""
         estimator = ComplexityEstimator()
 
         complexity = await estimator.estimate(simple_request)
@@ -69,7 +90,6 @@ class TestComplexityEstimator:
 
     @pytest.mark.asyncio
     async def test_complex_query(self, complex_request):
-        """Test complex query has high complexity."""
         estimator = ComplexityEstimator()
 
         complexity = await estimator.estimate(complex_request)
@@ -77,7 +97,6 @@ class TestComplexityEstimator:
 
     @pytest.mark.asyncio
     async def test_recommended_tier(self, simple_request, complex_request):
-        """Test tier recommendations."""
         estimator = ComplexityEstimator()
 
         simple_complexity = await estimator.estimate(simple_request)
@@ -88,50 +107,90 @@ class TestComplexityEstimator:
 
 
 class TestCostAwareRouter:
-    """Tests for CostAwareRouter."""
-
     @pytest.mark.asyncio
-    async def test_route_simple_request(self, simple_request, sample_models):
-        """Test simple request routed to cheap model."""
-        estimator = ComplexityEstimator()
-        router = CostAwareRouter(sample_models, estimator, cost_weight=0.9)
+    async def test_route_simple_request(
+        self,
+        simple_request,
+        sample_models,
+        sample_cost_estimator,
+    ):
+        router = CostAwareRouter(
+            sample_models,
+            ComplexityEstimator(),
+            sample_cost_estimator,
+            cost_weight=0.9,
+        )
 
         decision = await router.route(simple_request)
 
         assert decision.selected_model.id == "gpt-3.5"
+        assert decision.estimated_cost == pytest.approx(
+            sample_cost_estimator.estimate(
+                model_id="gpt-3.5",
+                input_tokens=simple_request.estimated_input_tokens,
+                output_tokens=simple_request.parameters.max_tokens,
+            )
+        )
 
     @pytest.mark.asyncio
-    async def test_route_complex_request(self, complex_request, sample_models):
-        """Test complex request routed to capable model."""
-        estimator = ComplexityEstimator()
-        router = CostAwareRouter(sample_models, estimator, cost_weight=0.5)
+    async def test_route_standard_complexity_uses_request_specific_cost_estimate(
+        self,
+        complex_request,
+        sample_models,
+        sample_cost_estimator,
+    ):
+        complexity_estimator = ComplexityEstimator()
+        complexity = await complexity_estimator.estimate(complex_request)
+        assert complexity.recommended_tier == ModelTier.STANDARD
+
+        router = CostAwareRouter(
+            sample_models,
+            complexity_estimator,
+            sample_cost_estimator,
+            cost_weight=0.5,
+        )
 
         decision = await router.route(complex_request)
 
-        # Should prefer gpt-4 for complex tasks
-        assert decision.estimated_cost > 0
+        assert decision.estimated_cost == pytest.approx(
+            sample_cost_estimator.estimate(
+                model_id=decision.selected_model.id,
+                input_tokens=complex_request.estimated_input_tokens,
+                output_tokens=complex_request.parameters.max_tokens,
+            )
+        )
         assert decision.estimated_latency_ms > 0
 
     @pytest.mark.asyncio
-    async def test_fallback_chain(self, simple_request, sample_models):
-        """Test fallback models included."""
-        estimator = ComplexityEstimator()
-        router = CostAwareRouter(sample_models, estimator)
+    async def test_fallback_chain(
+        self,
+        simple_request,
+        sample_models,
+        sample_cost_estimator,
+    ):
+        router = CostAwareRouter(
+            sample_models,
+            ComplexityEstimator(),
+            sample_cost_estimator,
+        )
 
         decision = await router.route(simple_request)
 
-        assert len(decision.fallback_models) >= 0
+        assert [model.id for model in decision.fallback_models] == ["gpt-4"]
 
 
 class TestBaselineRouter:
-    """Tests for deterministic benchmark baseline routing modes."""
-
     @pytest.mark.asyncio
-    async def test_single_model_mode_routes_to_configured_model(self, simple_request, sample_models):
-        """Test single_model baseline always uses the configured model."""
+    async def test_single_model_mode_routes_to_configured_model(
+        self,
+        simple_request,
+        sample_models,
+        sample_cost_estimator,
+    ):
         router = BaselineRouter(
             sample_models,
             ComplexityEstimator(),
+            sample_cost_estimator,
             mode=RoutingStrategy.SINGLE_MODEL,
             single_model_id="gpt-4",
         )
@@ -143,16 +202,17 @@ class TestBaselineRouter:
         assert "single_model baseline" in decision.decision_reason
 
     @pytest.mark.asyncio
-    async def test_rule_based_mode_uses_cheapest_sufficient_tier(
+    async def test_rule_based_mode_uses_request_specific_cheapest_sufficient_tier(
         self,
         simple_request,
         complex_request,
         sample_models,
+        sample_cost_estimator,
     ):
-        """Test rule_based baseline maps complexity to the cheapest sufficient tier."""
         router = BaselineRouter(
             sample_models,
             ComplexityEstimator(),
+            sample_cost_estimator,
             mode=RoutingStrategy.RULE_BASED,
         )
 
@@ -164,11 +224,16 @@ class TestBaselineRouter:
         assert complex_decision.complexity_estimate is not None
 
     @pytest.mark.asyncio
-    async def test_single_model_mode_requires_model_id(self, simple_request, sample_models):
-        """Test single_model baseline fails clearly without a configured model id."""
+    async def test_single_model_mode_requires_model_id(
+        self,
+        simple_request,
+        sample_models,
+        sample_cost_estimator,
+    ):
         router = BaselineRouter(
             sample_models,
             ComplexityEstimator(),
+            sample_cost_estimator,
             mode=RoutingStrategy.SINGLE_MODEL,
         )
 
@@ -177,8 +242,6 @@ class TestBaselineRouter:
 
 
 class TestPolicyRouter:
-    """Tests for deterministic SLO and budget-aware policy routing."""
-
     @pytest.fixture
     def policy_models(self) -> list[ModelConfig]:
         return [
@@ -188,8 +251,6 @@ class TestPolicyRouter:
                 tier=ModelTier.ECONOMY,
                 max_context_length=4096,
                 avg_latency_ms=250,
-                cost_per_1k_input_tokens=0.001,
-                cost_per_1k_output_tokens=0.002,
             ),
             ModelConfig(
                 id="standard",
@@ -197,8 +258,6 @@ class TestPolicyRouter:
                 tier=ModelTier.STANDARD,
                 max_context_length=8192,
                 avg_latency_ms=700,
-                cost_per_1k_input_tokens=0.005,
-                cost_per_1k_output_tokens=0.01,
             ),
             ModelConfig(
                 id="premium",
@@ -206,16 +265,30 @@ class TestPolicyRouter:
                 tier=ModelTier.PREMIUM,
                 max_context_length=128_000,
                 avg_latency_ms=1400,
-                cost_per_1k_input_tokens=0.03,
-                cost_per_1k_output_tokens=0.06,
             ),
         ]
 
+    @pytest.fixture
+    def policy_cost_estimator(self) -> FakeCostEstimator:
+        return FakeCostEstimator(
+            {
+                "economy": 0.002,
+                "standard": 0.015,
+                "premium": 0.09,
+            }
+        )
+
     @pytest.mark.asyncio
-    async def test_policy_prefers_candidate_within_budget(self, simple_request, policy_models):
+    async def test_policy_prefers_candidate_within_budget(
+        self,
+        simple_request,
+        policy_models,
+        policy_cost_estimator,
+    ):
         router = PolicyRouter(
             policy_models,
             ComplexityEstimator(),
+            policy_cost_estimator,
             PolicyRouterConfig(max_estimated_cost_usd=0.00003),
         )
 
@@ -227,10 +300,16 @@ class TestPolicyRouter:
         assert decision.decision_reason == RoutingReason.POLICY_COST_WITHIN_BUDGET
 
     @pytest.mark.asyncio
-    async def test_policy_latency_slo_filters_slow_models(self, simple_request, policy_models):
+    async def test_policy_latency_slo_filters_slow_models(
+        self,
+        simple_request,
+        policy_models,
+        policy_cost_estimator,
+    ):
         router = PolicyRouter(
             policy_models,
             ComplexityEstimator(),
+            policy_cost_estimator,
             PolicyRouterConfig(
                 latency_slo_ms=800,
                 min_quality_score=0.70,
@@ -244,10 +323,16 @@ class TestPolicyRouter:
         assert decision.decision_reason == RoutingReason.POLICY_LATENCY_WITHIN_SLO
 
     @pytest.mark.asyncio
-    async def test_policy_quality_floor_selects_capable_model(self, simple_request, policy_models):
+    async def test_policy_quality_floor_selects_capable_model(
+        self,
+        simple_request,
+        policy_models,
+        policy_cost_estimator,
+    ):
         router = PolicyRouter(
             policy_models,
             ComplexityEstimator(),
+            policy_cost_estimator,
             PolicyRouterConfig(min_quality_score=0.90),
         )
 
@@ -258,10 +343,16 @@ class TestPolicyRouter:
         assert decision.decision_reason == RoutingReason.POLICY_QUALITY_FLOOR
 
     @pytest.mark.asyncio
-    async def test_policy_records_impossible_budget_reason(self, simple_request, policy_models):
+    async def test_policy_records_impossible_budget_reason(
+        self,
+        simple_request,
+        policy_models,
+        policy_cost_estimator,
+    ):
         router = PolicyRouter(
             policy_models,
             ComplexityEstimator(),
+            policy_cost_estimator,
             PolicyRouterConfig(max_estimated_cost_usd=0.00000001),
         )
 
@@ -276,10 +367,12 @@ class TestPolicyRouter:
         self,
         simple_request,
         policy_models,
+        policy_cost_estimator,
     ):
         router = PolicyRouter(
             policy_models,
             ComplexityEstimator(),
+            policy_cost_estimator,
             PolicyRouterConfig(
                 min_quality_score=1.0,
                 latency_slo_ms=800,
@@ -292,16 +385,18 @@ class TestPolicyRouter:
 
 
 class TestLoadBalancedRouter:
-    """Tests for LoadBalancedRouter."""
-
     @pytest.mark.asyncio
-    async def test_round_robin(self, simple_request, sample_models):
-        """Test round-robin load balancing."""
-        router = LoadBalancedRouter(sample_models)
+    async def test_round_robin(
+        self,
+        simple_request,
+        sample_models,
+        sample_cost_estimator,
+    ):
+        router = LoadBalancedRouter(sample_models, sample_cost_estimator)
 
-        # Route multiple times
         decision1 = await router.route(simple_request)
         decision2 = await router.route(simple_request)
 
-        # Should alternate
         assert decision1.selected_model.id != decision2.selected_model.id
+        assert decision1.estimated_cost > 0
+        assert decision2.estimated_cost > 0

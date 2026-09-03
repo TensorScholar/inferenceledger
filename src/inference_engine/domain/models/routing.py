@@ -46,6 +46,12 @@ class RoutingReason(StrEnum):
 
 @dataclass(frozen=True)
 class ModelConfig:
+    """Operational and capability metadata used by routers.
+
+    Tariff data deliberately does not live here. Routing cost estimates must come from an injected
+    pricing-backed estimator so model metadata cannot drift from execution accounting.
+    """
+
     id: str
     name: str
     tier: ModelTier
@@ -55,17 +61,10 @@ class ModelConfig:
     avg_latency_ms: int = 500
     max_throughput_rps: int = 100
     tokens_per_second: int = 50
-    cost_per_1k_input_tokens: float = 0.001
-    cost_per_1k_output_tokens: float = 0.002
     max_replicas: int = 3
     current_load: float = 0.0
     healthy: bool = True
     circuit_breaker_open: bool = False
-
-    def calculate_cost(self, input_tokens: int, output_tokens: int) -> float:
-        input_cost = (input_tokens / 1000) * self.cost_per_1k_input_tokens
-        output_cost = (output_tokens / 1000) * self.cost_per_1k_output_tokens
-        return input_cost + output_cost
 
     @property
     def is_available(self) -> bool:
