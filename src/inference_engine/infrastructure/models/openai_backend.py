@@ -309,17 +309,20 @@ def _attempt_with_usage(
     cached_tokens: int,
     quote: PricingQuote | None,
 ) -> ProviderAttempt:
-    common = {
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": completion_tokens,
-        "total_tokens": total_tokens,
-        "cached_tokens": cached_tokens,
-    }
     if quote is None:
-        return replace(attempt, **common)
+        return replace(
+            attempt,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            cached_tokens=cached_tokens,
+        )
     return replace(
         attempt,
-        **common,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        cached_tokens=cached_tokens,
         calculated_cost_usd=quote.amount_usd,
         cost_evidence=CostEvidenceKind.CALCULATED_FROM_USAGE,
         pricing_table_version=quote.pricing_table_version,
