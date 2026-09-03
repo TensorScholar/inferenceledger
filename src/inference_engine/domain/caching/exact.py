@@ -30,7 +30,7 @@ class ExactCache(AbstractCache):
             hit=True,
             source="exact",
             similarity_score=1.0,
-            tokens_saved=entry.tokens_completion,
+            tokens_saved=entry.tokens_prompt + entry.tokens_completion,
             latency_saved_ms=500,
         )
         response = InferenceResponse(
@@ -38,14 +38,16 @@ class ExactCache(AbstractCache):
             text=entry.response,
             model_used=entry.model_used,
             usage=UsageMetrics(
-                prompt_tokens=entry.tokens_prompt,
-                completion_tokens=entry.tokens_completion,
-                total_tokens=entry.tokens_prompt + entry.tokens_completion,
-                cached_tokens=entry.tokens_completion,
+                prompt_tokens=0,
+                completion_tokens=0,
+                total_tokens=0,
+                cached_tokens=0,
                 cost_usd=0.0,
             ),
             cache_info=cache_info,
             latency_ms=1,
+            provider_attempt_count=0,
+            provider_retry_count=0,
         )
         return response, cache_info
 
@@ -93,4 +95,3 @@ class ExactCache(AbstractCache):
             "misses": self.misses,
             "hit_rate": self.hits / total if total else 0.0,
         }
-
