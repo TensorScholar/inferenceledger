@@ -38,11 +38,14 @@ class ModelPricing:
 
 @dataclass(frozen=True)
 class PricingQuote:
-    """Calculated cost plus the exact pricing assumption used to derive it."""
+    """Calculated cost plus reconstructable usage and pricing assumptions."""
 
     amount_usd: float
     provider: str
     model: str
+    input_tokens: int
+    output_tokens: int
+    cached_input_tokens: int
     pricing_record_id: str
     pricing_table_version: str
     pricing_observed_at: date
@@ -51,6 +54,10 @@ class PricingQuote:
     def __post_init__(self) -> None:
         if self.amount_usd < 0:
             raise ValueError("pricing quote amount_usd must be non-negative")
+        if min(self.input_tokens, self.output_tokens, self.cached_input_tokens) < 0:
+            raise ValueError("pricing quote token counts must be non-negative")
+        if self.cached_input_tokens > self.input_tokens:
+            raise ValueError("pricing quote cached_input_tokens cannot exceed input_tokens")
         string_fields = (
             self.provider,
             self.model,
@@ -196,6 +203,9 @@ class PricingTable:
             amount_usd=input_cost + cached_cost + output_cost,
             provider=provider,
             model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cached_input_tokens=cached_input_tokens,
             pricing_record_id=pricing.record_id,
             pricing_table_version=self.version,
             pricing_observed_at=pricing.observed_at,
