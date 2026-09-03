@@ -27,6 +27,8 @@ class CostAwareRouter(AbstractRouter):
         cost_estimator: RoutingCostEstimator,
         cost_weight: float = 0.7,
     ) -> None:
+        if not 0 <= cost_weight <= 1:
+            raise ValueError("cost_weight must be between 0 and 1")
         self.models = {model.id: model for model in models}
         self.complexity_estimator = complexity_estimator
         self.cost_estimator = cost_estimator
@@ -40,9 +42,7 @@ class CostAwareRouter(AbstractRouter):
             if model.is_available and self._can_handle_request(model, request, complexity)
         ]
         if not available:
-            available = [model for model in self.models.values() if model.healthy]
-        if not available:
-            raise RuntimeError("No healthy models available")
+            raise RuntimeError("No available model can satisfy request capability constraints")
 
         selected, estimated_cost, candidate_costs = self._select_optimal_model(
             available,
