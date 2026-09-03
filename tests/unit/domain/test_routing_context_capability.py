@@ -5,7 +5,10 @@ import pytest
 from inference_engine.domain.models.request import InferenceRequest, ModelParameters
 from inference_engine.domain.models.routing import ModelConfig, ModelTier, RoutingStrategy
 from inference_engine.domain.routing.baseline import BaselineRouter, BaselineRoutingModeError
-from inference_engine.domain.routing.capability import required_context_tokens, supports_request_context
+from inference_engine.domain.routing.capability import (
+    required_context_tokens,
+    supports_request_context,
+)
 from inference_engine.domain.routing.complexity import ComplexityEstimator
 from inference_engine.domain.routing.cost_aware import CostAwareRouter
 from inference_engine.domain.routing.load_balanced import LoadBalancedRouter
