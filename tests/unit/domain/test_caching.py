@@ -1,5 +1,7 @@
 """Unit tests for caching strategies."""
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
 from inference_engine.domain.caching.eviction import CostAwareEvictionPolicy
@@ -124,15 +126,16 @@ class TestExactCache:
         assert "cache_size" in metrics
 
 
-def test_cost_aware_eviction_does_not_invent_value_for_unknown_cost() -> None:
+def test_cost_aware_eviction_falls_back_to_lru_when_any_cost_is_unknown() -> None:
     policy = CostAwareEvictionPolicy()
-    key = CacheKey(content_hash="known", model="test", temperature=0.0, max_tokens=1)
+    baseline = datetime(2026, 1, 1, tzinfo=UTC)
     known = CacheEntry(
-        key=key,
+        key=CacheKey(content_hash="known", model="test", temperature=0.0, max_tokens=1),
         prompt="known",
         response="known",
         cost_usd=0.01,
         access_count=5,
+        last_accessed=baseline,
     )
     unknown = CacheEntry(
         key=CacheKey(content_hash="unknown", model="test", temperature=0.0, max_tokens=1),
@@ -140,9 +143,10 @@ def test_cost_aware_eviction_does_not_invent_value_for_unknown_cost() -> None:
         response="unknown",
         cost_usd=None,
         access_count=5,
+        last_accessed=baseline + timedelta(seconds=1),
     )
 
     selected = policy.select_to_evict([known, unknown])
 
-    assert selected is unknown
+    assert selected is known
     assert unknown.cost_savings is None
