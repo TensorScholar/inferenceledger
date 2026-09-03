@@ -11,7 +11,7 @@ from ..infrastructure.telemetry.request_log import RequestTrace, RouteTrace
 from ..utils.time import utc_now
 from .harness import BenchmarkReport
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 @dataclass(frozen=True)
@@ -238,6 +238,8 @@ class SQLiteBenchmarkLedger:
             )
             _downgrade_ambiguous_legacy_costs(connection, "benchmark_traces")
             _downgrade_ambiguous_legacy_costs(connection, "benchmark_provider_usage")
+            _downgrade_legacy_attempt_provenance(connection, "benchmark_traces")
+            _downgrade_legacy_attempt_provenance(connection, "benchmark_provider_usage")
             connection.execute(
                 """
                 INSERT OR REPLACE INTO ledger_metadata (key, value)
@@ -648,7 +650,10 @@ def _usage_storage_row(run_id: str, trace: RequestTrace) -> tuple[object, ...]:
 
 
 def _trace_from_row(row: sqlite3.Row) -> RequestTrace:
+    attempts = _attempts_from_json(str(row["provider_attempts_json"]))
     complete = bool(row["cost_evidence_complete"])
+    if attempts and not all(attempt.cost_is_known for attempt in attempts):
+        complete = False
     return RequestTrace(
         request_id=str(row["request_id"]),
         provider=str(row["provider"]),
@@ -670,12 +675,15 @@ def _trace_from_row(row: sqlite3.Row) -> RequestTrace:
         eval_type=_optional_str(row["eval_type"]),
         provider_attempt_count=int(row["provider_attempt_count"]),
         provider_retry_count=int(row["provider_retry_count"]),
-        provider_attempts=_attempts_from_json(str(row["provider_attempts_json"])),
+        provider_attempts=attempts,
     )
 
 
 def _usage_from_row(row: sqlite3.Row) -> ProviderUsageRecord:
+    attempts = _attempts_from_json(str(row["provider_attempts_json"]))
     complete = bool(row["cost_evidence_complete"])
+    if attempts and not all(attempt.cost_is_known for attempt in attempts):
+        complete = False
     return ProviderUsageRecord(
         request_id=str(row["request_id"]),
         provider=str(row["provider"]),
@@ -689,7 +697,7 @@ def _usage_from_row(row: sqlite3.Row) -> ProviderUsageRecord:
         cache_hit=bool(row["cache_hit"]),
         provider_attempt_count=int(row["provider_attempt_count"]),
         provider_retry_count=int(row["provider_retry_count"]),
-        provider_attempts=_attempts_from_json(str(row["provider_attempts_json"])),
+        provider_attempts=attempts,
         error_type=_optional_str(row["error_type"]),
         timestamp=str(row["timestamp"]),
     )
@@ -718,22 +726,54 @@ def _attempts_from_json(raw: str) -> tuple[ProviderAttempt, ...]:
 def _attempt_from_dict(raw: Any) -> ProviderAttempt:
     if not isinstance(raw, dict):
         raise ValueError("provider attempt must be an object")
+    normalized, _ = _normalize_attempt_pricing_provenance(raw)
     return ProviderAttempt(
-        attempt_index=int(raw["attempt_index"]),
-        provider=str(raw["provider"]),
-        model=str(raw["model"]),
-        outcome=AttemptOutcome(str(raw["outcome"])),
-        latency_ms=int(raw["latency_ms"]),
-        prompt_tokens=_optional_int(raw.get("prompt_tokens")),
-        completion_tokens=_optional_int(raw.get("completion_tokens")),
-        total_tokens=_optional_int(raw.get("total_tokens")),
-        cached_tokens=_optional_int(raw.get("cached_tokens")),
-        calculated_cost_usd=_optional_float(raw.get("calculated_cost_usd")),
-        cost_evidence=CostEvidenceKind(str(raw.get("cost_evidence", CostEvidenceKind.UNKNOWN.value))),
-        pricing_table_version=_optional_str(raw.get("pricing_table_version")),
-        error_type=_optional_str(raw.get("error_type")),
-        status_code=_optional_int(raw.get("status_code")),
+        attempt_index=int(normalized["attempt_index"]),
+        provider=str(normalized["provider"]),
+        model=str(normalized["model"]),
+        outcome=AttemptOutcome(str(normalized["outcome"])),
+        latency_ms=int(normalized["latency_ms"]),
+        prompt_tokens=_optional_int(normalized.get("prompt_tokens")),
+        completion_tokens=_optional_int(normalized.get("completion_tokens")),
+        total_tokens=_optional_int(normalized.get("total_tokens")),
+        cached_tokens=_optional_int(normalized.get("cached_tokens")),
+        calculated_cost_usd=_optional_float(normalized.get("calculated_cost_usd")),
+        cost_evidence=CostEvidenceKind(
+            str(normalized.get("cost_evidence", CostEvidenceKind.UNKNOWN.value))
+        ),
+        pricing_table_version=_optional_str(normalized.get("pricing_table_version")),
+        pricing_record_id=_optional_str(normalized.get("pricing_record_id")),
+        pricing_observed_at=_optional_str(normalized.get("pricing_observed_at")),
+        pricing_source_url=_optional_str(normalized.get("pricing_source_url")),
+        error_type=_optional_str(normalized.get("error_type")),
+        status_code=_optional_int(normalized.get("status_code")),
     )
+
+
+def _normalize_attempt_pricing_provenance(raw: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    normalized = dict(raw)
+    cost_evidence = CostEvidenceKind(
+        str(normalized.get("cost_evidence", CostEvidenceKind.UNKNOWN.value))
+    )
+    if cost_evidence != CostEvidenceKind.CALCULATED_FROM_USAGE:
+        return normalized, False
+
+    required = (
+        normalized.get("pricing_table_version"),
+        normalized.get("pricing_record_id"),
+        normalized.get("pricing_observed_at"),
+        normalized.get("pricing_source_url"),
+    )
+    if all(value is not None and str(value).strip() for value in required):
+        return normalized, False
+
+    normalized["calculated_cost_usd"] = None
+    normalized["cost_evidence"] = CostEvidenceKind.UNKNOWN.value
+    normalized["pricing_table_version"] = None
+    normalized["pricing_record_id"] = None
+    normalized["pricing_observed_at"] = None
+    normalized["pricing_source_url"] = None
+    return normalized, True
 
 
 def _downgrade_ambiguous_legacy_costs(connection: sqlite3.Connection, table_name: str) -> None:
@@ -747,6 +787,40 @@ def _downgrade_ambiguous_legacy_costs(connection: sqlite3.Connection, table_name
           AND (error_type IS NOT NULL OR provider_retry_count > 0 OR provider_attempt_count > 1)
         """
     )
+
+
+def _downgrade_legacy_attempt_provenance(
+    connection: sqlite3.Connection,
+    table_name: str,
+) -> None:
+    rows = connection.execute(
+        f"SELECT rowid, provider_attempts_json FROM {table_name} WHERE provider_attempts_json != '[]'"
+    ).fetchall()
+    for row in rows:
+        raw_attempts = json.loads(str(row["provider_attempts_json"]))
+        if not isinstance(raw_attempts, list):
+            raise ValueError(f"{table_name}.provider_attempts_json must contain a list")
+
+        changed = False
+        normalized_attempts: list[dict[str, Any]] = []
+        for raw_attempt in raw_attempts:
+            if not isinstance(raw_attempt, dict):
+                raise ValueError(f"{table_name}.provider_attempts_json contains a non-object attempt")
+            normalized, attempt_changed = _normalize_attempt_pricing_provenance(raw_attempt)
+            normalized_attempts.append(normalized)
+            changed = changed or attempt_changed
+
+        if changed:
+            connection.execute(
+                f"""
+                UPDATE {table_name}
+                SET provider_attempts_json = ?,
+                    cost_evidence_complete = 0,
+                    estimated_cost_usd = NULL
+                WHERE rowid = ?
+                """,
+                (json.dumps(normalized_attempts, sort_keys=True), int(row["rowid"])),
+            )
 
 
 def _column_is_not_null(

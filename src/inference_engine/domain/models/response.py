@@ -21,13 +21,19 @@ class CacheInfo:
 
 @dataclass(frozen=True)
 class UsageMetrics:
-    """Token usage and cost metrics for the final successful provider response."""
+    """Token usage and optional calculated cost for the final successful provider response."""
 
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
     cached_tokens: int = 0
-    cost_usd: float = 0.0
+    cost_usd: float | None = None
+
+    def __post_init__(self) -> None:
+        if min(self.prompt_tokens, self.completion_tokens, self.total_tokens, self.cached_tokens) < 0:
+            raise ValueError("usage token counts must be non-negative")
+        if self.cost_usd is not None and self.cost_usd < 0:
+            raise ValueError("cost_usd must be non-negative when known")
 
     @property
     def cache_hit_rate(self) -> float:
@@ -62,8 +68,8 @@ class InferenceResponse:
             object.__setattr__(self, "provider_retry_count", max(len(self.provider_attempts) - 1, 0))
 
     @property
-    def total_cost_usd(self) -> float:
-        """Cost of the final successful response only.
+    def total_cost_usd(self) -> float | None:
+        """Calculated cost of the final successful response only, when pricing is known.
 
         Full execution-chain cost belongs to execution evidence because preceding retry/fallback
         attempts may have unknown or additional cost.

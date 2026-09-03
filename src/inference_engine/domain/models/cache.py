@@ -57,7 +57,7 @@ class CacheEntry:
     model_used: str = ""
     tokens_prompt: int = 0
     tokens_completion: int = 0
-    cost_usd: float = 0.0
+    cost_usd: float | None = None
     strategy: CacheStrategy = CacheStrategy.EXACT
     created_at: datetime = field(default_factory=utc_now)
     last_accessed: datetime = field(default_factory=utc_now)
@@ -77,7 +77,9 @@ class CacheEntry:
         return (utc_now() - self.created_at).total_seconds()
 
     @property
-    def cost_savings(self) -> float:
+    def cost_savings(self) -> float | None:
+        if self.cost_usd is None:
+            return None
         return self.cost_usd * self.access_count
 
     def touch(self) -> None:

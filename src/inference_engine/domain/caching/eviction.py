@@ -26,7 +26,7 @@ class LRUEvictionPolicy(EvictionPolicy):
     """Least Recently Used eviction policy."""
 
     def should_evict(self, _entry: CacheEntry) -> bool:
-        return False  # LRU evicts on-demand, not by checking individual entries
+        return False
 
     def select_to_evict(self, entries: list[CacheEntry]) -> CacheEntry:
         if not entries:
@@ -66,7 +66,6 @@ class TTL_EvictionPolicy(EvictionPolicy):
         if not entries:
             raise ValueError("Cannot evict from empty list")
 
-        # Select expired entry if any, otherwise oldest
         expired = [e for e in entries if self.should_evict(e)]
         if expired:
             oldest_expired = max(expired, key=lambda e: e.created_at)
@@ -79,7 +78,7 @@ class TTL_EvictionPolicy(EvictionPolicy):
 
 
 class CostAwareEvictionPolicy(EvictionPolicy):
-    """Evict based on cost-benefit ratio."""
+    """Evict by measured cost benefit, falling back to LRU when economics are unknown."""
 
     def should_evict(self, _entry: CacheEntry) -> bool:
         return False
@@ -88,14 +87,21 @@ class CostAwareEvictionPolicy(EvictionPolicy):
         if not entries:
             raise ValueError("Cannot evict from empty list")
 
-        # Calculate cost-benefit score (lower is worse, evict first)
-        # Benefit = cost_saved * access_count
-        # Score = benefit / age_seconds (benefit per second)
-        def score(e: CacheEntry) -> float:
-            if e.age_seconds == 0:
+        if any(entry.cost_savings is None for entry in entries):
+            fallback = min(entries, key=lambda entry: entry.last_accessed)
+            logger.debug(
+                "cost_aware_eviction_fallback_lru",
+                entry_id=str(fallback.id),
+                reason="unknown_cost_evidence",
+            )
+            return fallback
+
+        def score(entry: CacheEntry) -> float:
+            benefit = entry.cost_savings
+            assert benefit is not None
+            if entry.age_seconds == 0:
                 return float("inf")
-            benefit = e.cost_savings
-            return benefit / e.age_seconds
+            return benefit / entry.age_seconds
 
         worst = min(entries, key=score)
         logger.debug("cost_aware_eviction", entry_id=str(worst.id), score=score(worst))

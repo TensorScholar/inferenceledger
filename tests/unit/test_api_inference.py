@@ -64,9 +64,40 @@ async def test_api_inference_uses_provider_backend(monkeypatch: pytest.MonkeyPat
     assert response.prompt_tokens == 10
     assert response.completion_tokens == 5
     assert response.cached_tokens == 2
-    assert response.cost_usd == 0.001
+    assert response.final_attempt_cost_usd == 0.001
     assert response.provider_attempt_count == 2
     assert response.provider_retry_count == 1
+
+
+@pytest.mark.asyncio
+async def test_api_inference_preserves_unknown_final_attempt_cost(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    class UnpricedBackend:
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        async def infer(self, request: InferenceRequest) -> InferenceResponse:
+            return InferenceResponse(
+                request_id=request.id,
+                text="ok",
+                model_used="test-model",
+                usage=UsageMetrics(
+                    prompt_tokens=10,
+                    completion_tokens=5,
+                    total_tokens=15,
+                    cost_usd=None,
+                ),
+                cache_info=CacheInfo(hit=False),
+                latency_ms=123,
+            )
+
+    monkeypatch.setattr(inference_route, "OpenAIBackend", UnpricedBackend)
+
+    response = await create_inference(InferenceRequestBody(prompt="hello", model="test-model"))
+
+    assert response.final_attempt_cost_usd is None
+    assert response.total_tokens == 15
 
 
 @pytest.mark.asyncio
@@ -81,7 +112,7 @@ async def test_api_inference_maps_provider_errors(monkeypatch: pytest.MonkeyPatc
             raise ProviderError(
                 ProviderErrorType.RATE_LIMIT,
                 "rate limited",
-                provider="openai-compatible",
+                provider="test-provider",
                 retryable=True,
                 status_code=429,
                 provider_attempt_count=2,
