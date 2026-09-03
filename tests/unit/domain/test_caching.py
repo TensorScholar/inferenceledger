@@ -1,4 +1,5 @@
 """Unit tests for caching strategies."""
+
 import pytest
 
 from inference_engine.domain.caching.exact import ExactCache
@@ -38,19 +39,23 @@ class TestExactCache:
 
     @pytest.mark.asyncio
     async def test_set_and_get(self, sample_request, sample_response):
-        """Test setting and getting from cache."""
+        """A cache hit is a successful local outcome with zero provider execution."""
         cache = ExactCache(max_entries=1000)
 
-        # Set
         await cache.set(sample_request, sample_response)
-
-        # Get
         result = await cache.get(sample_request)
         assert result is not None
 
         response, cache_info = result
         assert cache_info.hit is True
+        assert cache_info.tokens_saved == 15
         assert response.text == sample_response.text
+        assert response.provider_attempt_count == 0
+        assert response.provider_retry_count == 0
+        assert response.usage.prompt_tokens == 0
+        assert response.usage.completion_tokens == 0
+        assert response.usage.total_tokens == 0
+        assert response.usage.cost_usd == 0.0
 
     @pytest.mark.asyncio
     async def test_cache_miss(self, sample_request):
@@ -65,7 +70,6 @@ class TestExactCache:
         """Test LRU eviction when cache is full."""
         cache = ExactCache(max_entries=2)
 
-        # Add entries
         for i in range(3):
             req = InferenceRequest(
                 prompt=f"Query {i}",
@@ -81,7 +85,6 @@ class TestExactCache:
             )
             await cache.set(req, resp)
 
-        # Should have evicted oldest
         stats = cache.get_metrics()
         assert stats["cache_size"] == 2
 
@@ -92,14 +95,12 @@ class TestExactCache:
 
         await cache.set(sample_request, sample_response)
 
-        # Invalidate
         count = await cache.invalidate("France")
         assert count == 0
 
         count = await cache.invalidate("2+2")
         assert count == 1
 
-        # Entry should be gone
         result = await cache.get(sample_request)
         assert result is None
 
@@ -112,4 +113,3 @@ class TestExactCache:
         assert "misses" in metrics
         assert "hit_rate" in metrics
         assert "cache_size" in metrics
-
