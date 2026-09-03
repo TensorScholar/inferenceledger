@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from uuid import uuid4
+from datetime import date
 
 import pytest
 
@@ -10,6 +10,7 @@ import scripts.run_benchmark as benchmark_script
 from inference_engine.benchmarking.harness import summarize_traces
 from inference_engine.benchmarking.sqlite_ledger import SQLiteBenchmarkLedger
 from inference_engine.cli import _run_smoke
+from inference_engine.domain.cost.pricing import PricingQuote
 from inference_engine.domain.models.execution import (
     AttemptOutcome,
     CostEvidenceKind,
@@ -57,23 +58,44 @@ async def test_benchmark_budget_violation_skips_provider_call(
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 
     class FakeRouter:
-        async def route(self, _request):
+        async def route(self, request):
             model = ModelConfig(
                 id="test-model",
                 name="Test Model",
                 tier=ModelTier.STANDARD,
                 max_context_length=4096,
             )
+            observed_at = date(2026, 9, 3)
+            input_tokens = request.estimated_input_tokens
+            output_tokens = request.parameters.max_tokens
+            total_tokens = input_tokens + output_tokens
+            rate_per_million = 0.02 * 1_000_000 / total_tokens
+            quote = PricingQuote(
+                amount_usd=0.02,
+                provider="openai",
+                model="test-model",
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cached_input_tokens=0,
+                input_per_million=rate_per_million,
+                output_per_million=rate_per_million,
+                cached_input_per_million=None,
+                pricing_record_id=f"openai:test-model:{observed_at.isoformat()}",
+                pricing_table_version="test-budget-v1",
+                pricing_observed_at=observed_at,
+                pricing_source_url="https://pricing.example/test-model",
+            )
             return RoutingDecision(
-                request_id=uuid4(),
+                request_id=request.id,
                 selected_model=model,
                 strategy=RoutingStrategy.SINGLE_MODEL,
                 complexity_estimate=None,
-                estimated_cost=0.02,
+                estimated_cost=quote.amount_usd,
                 estimated_latency_ms=100,
                 estimated_quality_score=0.7,
                 decision_reason="fake expensive route",
                 fallback_models=[],
+                cost_quote=quote,
                 considered_models=["test-model"],
             )
 
@@ -113,7 +135,10 @@ async def test_benchmark_budget_violation_skips_provider_call(
     assert ledger_row["provider_retry_count"] == 0
     assert ledger_row["estimated_cost_usd"] == 0.0
     assert ledger_row["cost_evidence_complete"] is True
-    assert "fake expensive route" in (tmp_path / "routes.jsonl").read_text(encoding="utf-8")
+    route_row = json.loads((tmp_path / "routes.jsonl").read_text(encoding="utf-8"))
+    assert "fake expensive route" in route_row["decision_reason"]
+    assert route_row["cost_evidence_complete"] is True
+    assert route_row["cost_quote"]["pricing_record_id"] == "openai:test-model:2026-09-03"
 
 
 def test_benchmark_build_router_supports_policy_strategy() -> None:

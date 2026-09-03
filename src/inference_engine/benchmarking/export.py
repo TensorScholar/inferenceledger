@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
+from datetime import date
 from pathlib import Path
+from typing import Any
 
 from ..infrastructure.telemetry.request_log import RequestTrace, RouteTrace
 from .harness import BenchmarkReport
@@ -25,7 +27,7 @@ def export_run_json(
         "routes": [asdict(route) for route in routes],
     }
     with output_path.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2, sort_keys=True)
+        json.dump(payload, handle, indent=2, sort_keys=True, default=_json_default)
         handle.write("\n")
 
 
@@ -133,8 +135,8 @@ def export_run_markdown(
     if routes:
         lines.extend(
             [
-                "| Request | Strategy | Selected model | Estimated route cost | Budget violation | Reason |",
-                "| --- | --- | --- | ---: | --- | --- |",
+                "| Request | Strategy | Selected model | Estimated route cost | Cost evidence | Budget violation | Reason |",
+                "| --- | --- | --- | ---: | --- | --- | --- |",
             ]
         )
         for route in routes:
@@ -143,10 +145,26 @@ def export_run_markdown(
                 f"`{route.request_id}` | "
                 f"`{route.strategy}` | "
                 f"`{route.selected_model}` | "
-                f"${route.estimated_cost_usd:.8f} | "
+                f"{_format_optional_cost(route.estimated_cost_usd)} | "
+                f"{route.cost_evidence_complete} | "
                 f"{route.budget_violation} | "
                 f"{_escape_table(route.decision_reason)} |"
             )
+            if route.cost_quote is not None:
+                quote = route.cost_quote
+                lines.extend(
+                    [
+                        "",
+                        f"Pricing evidence for `{route.request_id}`:",
+                        f"- Pricing record: `{quote.pricing_record_id}`",
+                        f"- Pricing table: `{quote.pricing_table_version}`",
+                        f"- Pricing observed at: `{quote.pricing_observed_at.isoformat()}`",
+                        f"- Pricing source: `{quote.pricing_source_url}`",
+                        f"- Route token assumptions: input={quote.input_tokens}, output={quote.output_tokens}, cached_input={quote.cached_input_tokens}",
+                        f"- Rate snapshot per 1M tokens: input={quote.input_per_million}, output={quote.output_per_million}, cached_input={quote.cached_input_per_million if quote.cached_input_per_million is not None else 'n/a'}",
+                        "",
+                    ]
+                )
     else:
         lines.append("No route decisions were recorded.")
 
@@ -182,10 +200,17 @@ def export_run_markdown(
     lines.extend(["", "## Limitations", ""])
     for limitation in report.limitations:
         lines.append(f"- {limitation}")
+    lines.append("- Route cost is defensible only when route cost evidence is complete.")
     lines.append("- This export is evidence for one run only; compare runs before discussing cost deltas.")
     lines.append("")
 
     output_path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _json_default(value: Any) -> str:
+    if isinstance(value, date):
+        return value.isoformat()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
 def _format_rate(value: float) -> str:

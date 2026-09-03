@@ -3,15 +3,17 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import asdict, dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 
+from ..domain.cost.pricing import PricingQuote
 from ..domain.models.execution import AttemptOutcome, CostEvidenceKind, ProviderAttempt
 from ..infrastructure.telemetry.request_log import RequestTrace, RouteTrace
 from ..utils.time import utc_now
 from .harness import BenchmarkReport
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 @dataclass(frozen=True)
@@ -106,9 +108,51 @@ CREATE TABLE IF NOT EXISTS benchmark_provider_usage (
 )
 """
 
+_ROUTE_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS benchmark_routes (
+    run_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    strategy TEXT NOT NULL,
+    selected_model TEXT NOT NULL,
+    estimated_cost_usd REAL NOT NULL,
+    estimated_latency_ms INTEGER NOT NULL,
+    decision_reason TEXT NOT NULL,
+    considered_models_json TEXT NOT NULL,
+    fallback_models_json TEXT NOT NULL,
+    max_estimated_cost_usd REAL,
+    budget_violation INTEGER NOT NULL,
+    budget_violation_reason TEXT,
+    timestamp TEXT NOT NULL,
+    PRIMARY KEY (run_id, request_id),
+    FOREIGN KEY (run_id) REFERENCES benchmark_runs(run_id) ON DELETE CASCADE
+)
+"""
+
+_ROUTE_COST_EVIDENCE_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS benchmark_route_cost_evidence (
+    run_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    input_tokens INTEGER NOT NULL,
+    output_tokens INTEGER NOT NULL,
+    cached_input_tokens INTEGER NOT NULL,
+    input_per_million REAL NOT NULL,
+    output_per_million REAL NOT NULL,
+    cached_input_per_million REAL,
+    pricing_record_id TEXT NOT NULL,
+    pricing_table_version TEXT NOT NULL,
+    pricing_observed_at TEXT NOT NULL,
+    pricing_source_url TEXT NOT NULL,
+    PRIMARY KEY (run_id, request_id),
+    FOREIGN KEY (run_id, request_id)
+        REFERENCES benchmark_routes(run_id, request_id) ON DELETE CASCADE
+)
+"""
+
 
 class SQLiteBenchmarkLedger:
-    """Small local SQLite ledger for reproducible benchmark run comparisons."""
+    """Local evidence ledger with fail-closed economic provenance semantics."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -174,27 +218,11 @@ class SQLiteBenchmarkLedger:
             ):
                 _rebuild_usage_table_with_nullable_cost(connection)
 
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS benchmark_routes (
-                    run_id TEXT NOT NULL,
-                    request_id TEXT NOT NULL,
-                    strategy TEXT NOT NULL,
-                    selected_model TEXT NOT NULL,
-                    estimated_cost_usd REAL NOT NULL,
-                    estimated_latency_ms INTEGER NOT NULL,
-                    decision_reason TEXT NOT NULL,
-                    considered_models_json TEXT NOT NULL,
-                    fallback_models_json TEXT NOT NULL,
-                    max_estimated_cost_usd REAL,
-                    budget_violation INTEGER NOT NULL,
-                    budget_violation_reason TEXT,
-                    timestamp TEXT NOT NULL,
-                    PRIMARY KEY (run_id, request_id),
-                    FOREIGN KEY (run_id) REFERENCES benchmark_runs(run_id) ON DELETE CASCADE
-                )
-                """
-            )
+            # Raw route history remains intact across schema upgrades. The v6 evidence table is the
+            # trust boundary: a historical numeric route estimate without a matching evidence row is
+            # retained for audit history but is never exposed as validated monetary evidence.
+            connection.execute(_ROUTE_TABLE_SQL)
+            connection.execute(_ROUTE_COST_EVIDENCE_TABLE_SQL)
 
             connection.execute(
                 """
@@ -256,6 +284,10 @@ class SQLiteBenchmarkLedger:
         traces: list[RequestTrace],
         route_traces: list[RouteTrace] | None = None,
     ) -> None:
+        routes = list(route_traces or [])
+        for route in routes:
+            _require_complete_route_cost_evidence(route)
+
         self.initialize()
         with self._connect() as connection:
             connection.execute("PRAGMA foreign_keys=ON")
@@ -352,24 +384,29 @@ class SQLiteBenchmarkLedger:
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                [
-                    (
-                        run_id,
-                        route.request_id,
-                        route.strategy,
-                        route.selected_model,
-                        route.estimated_cost_usd,
-                        route.estimated_latency_ms,
-                        route.decision_reason,
-                        json.dumps(route.considered_models, sort_keys=True),
-                        json.dumps(route.fallback_models, sort_keys=True),
-                        route.max_estimated_cost_usd,
-                        1 if route.budget_violation else 0,
-                        route.budget_violation_reason,
-                        route.timestamp,
-                    )
-                    for route in (route_traces or [])
-                ],
+                [_route_storage_row(run_id, route) for route in routes],
+            )
+            connection.executemany(
+                """
+                INSERT INTO benchmark_route_cost_evidence (
+                    run_id,
+                    request_id,
+                    provider,
+                    model,
+                    input_tokens,
+                    output_tokens,
+                    cached_input_tokens,
+                    input_per_million,
+                    output_per_million,
+                    cached_input_per_million,
+                    pricing_record_id,
+                    pricing_table_version,
+                    pricing_observed_at,
+                    pricing_source_url
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [_route_evidence_storage_row(run_id, route) for route in routes],
             )
 
     def get_report(self, run_id: str) -> BenchmarkReport:
@@ -549,51 +586,39 @@ class SQLiteBenchmarkLedger:
             rows = connection.execute(
                 """
                 SELECT
-                    request_id,
-                    strategy,
-                    selected_model,
-                    estimated_cost_usd,
-                    estimated_latency_ms,
-                    decision_reason,
-                    considered_models_json,
-                    fallback_models_json,
-                    max_estimated_cost_usd,
-                    budget_violation,
-                    budget_violation_reason,
-                    timestamp
-                FROM benchmark_routes
-                WHERE run_id = ?
-                ORDER BY timestamp, request_id
+                    r.request_id,
+                    r.strategy,
+                    r.selected_model,
+                    r.estimated_cost_usd AS raw_estimated_cost_usd,
+                    r.estimated_latency_ms,
+                    r.decision_reason,
+                    r.considered_models_json,
+                    r.fallback_models_json,
+                    r.max_estimated_cost_usd,
+                    r.budget_violation,
+                    r.budget_violation_reason,
+                    r.timestamp,
+                    e.provider AS pricing_provider,
+                    e.model AS pricing_model,
+                    e.input_tokens AS pricing_input_tokens,
+                    e.output_tokens AS pricing_output_tokens,
+                    e.cached_input_tokens AS pricing_cached_input_tokens,
+                    e.input_per_million AS pricing_input_per_million,
+                    e.output_per_million AS pricing_output_per_million,
+                    e.cached_input_per_million AS pricing_cached_input_per_million,
+                    e.pricing_record_id,
+                    e.pricing_table_version,
+                    e.pricing_observed_at,
+                    e.pricing_source_url
+                FROM benchmark_routes AS r
+                LEFT JOIN benchmark_route_cost_evidence AS e
+                  ON e.run_id = r.run_id AND e.request_id = r.request_id
+                WHERE r.run_id = ?
+                ORDER BY r.timestamp, r.request_id
                 """,
                 (run_id,),
             ).fetchall()
-        return [
-            RouteTrace(
-                request_id=str(row["request_id"]),
-                strategy=str(row["strategy"]),
-                selected_model=str(row["selected_model"]),
-                estimated_cost_usd=float(row["estimated_cost_usd"]),
-                estimated_latency_ms=int(row["estimated_latency_ms"]),
-                decision_reason=str(row["decision_reason"]),
-                considered_models=[
-                    str(item) for item in json.loads(str(row["considered_models_json"]))
-                ],
-                fallback_models=[str(item) for item in json.loads(str(row["fallback_models_json"]))],
-                max_estimated_cost_usd=(
-                    float(row["max_estimated_cost_usd"])
-                    if row["max_estimated_cost_usd"] is not None
-                    else None
-                ),
-                budget_violation=bool(row["budget_violation"]),
-                budget_violation_reason=(
-                    str(row["budget_violation_reason"])
-                    if row["budget_violation_reason"] is not None
-                    else None
-                ),
-                timestamp=str(row["timestamp"]),
-            )
-            for row in rows
-        ]
+        return [_route_from_row(row) for row in rows]
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path)
@@ -646,6 +671,128 @@ def _usage_storage_row(run_id: str, trace: RequestTrace) -> tuple[object, ...]:
         _attempts_json(trace.provider_attempts),
         trace.error_type,
         trace.timestamp,
+    )
+
+
+def _route_storage_row(run_id: str, route: RouteTrace) -> tuple[object, ...]:
+    assert route.estimated_cost_usd is not None
+    return (
+        run_id,
+        route.request_id,
+        route.strategy,
+        route.selected_model,
+        route.estimated_cost_usd,
+        route.estimated_latency_ms,
+        route.decision_reason,
+        json.dumps(route.considered_models, sort_keys=True),
+        json.dumps(route.fallback_models, sort_keys=True),
+        route.max_estimated_cost_usd,
+        1 if route.budget_violation else 0,
+        route.budget_violation_reason,
+        route.timestamp,
+    )
+
+
+def _route_evidence_storage_row(run_id: str, route: RouteTrace) -> tuple[object, ...]:
+    quote = route.cost_quote
+    assert quote is not None
+    return (
+        run_id,
+        route.request_id,
+        quote.provider,
+        quote.model,
+        quote.input_tokens,
+        quote.output_tokens,
+        quote.cached_input_tokens,
+        quote.input_per_million,
+        quote.output_per_million,
+        quote.cached_input_per_million,
+        quote.pricing_record_id,
+        quote.pricing_table_version,
+        quote.pricing_observed_at.isoformat(),
+        quote.pricing_source_url,
+    )
+
+
+def _require_complete_route_cost_evidence(route: RouteTrace) -> None:
+    if (
+        not route.cost_evidence_complete
+        or route.estimated_cost_usd is None
+        or route.cost_quote is None
+    ):
+        raise ValueError(
+            "new SQLite route writes require complete, reconstructable pricing evidence"
+        )
+
+
+def _route_from_row(row: sqlite3.Row) -> RouteTrace:
+    request_id = str(row["request_id"])
+    strategy = str(row["strategy"])
+    selected_model = str(row["selected_model"])
+    estimated_latency_ms = int(row["estimated_latency_ms"])
+    decision_reason = str(row["decision_reason"])
+    considered_models = [
+        str(item) for item in json.loads(str(row["considered_models_json"]))
+    ]
+    fallback_models = [
+        str(item) for item in json.loads(str(row["fallback_models_json"]))
+    ]
+    max_estimated_cost_usd = _optional_float(row["max_estimated_cost_usd"])
+    budget_violation = bool(row["budget_violation"])
+    budget_violation_reason = _optional_str(row["budget_violation_reason"])
+    timestamp = str(row["timestamp"])
+
+    if row["pricing_record_id"] is None:
+        return RouteTrace(
+            request_id=request_id,
+            strategy=strategy,
+            selected_model=selected_model,
+            estimated_cost_usd=None,
+            estimated_latency_ms=estimated_latency_ms,
+            decision_reason=decision_reason,
+            considered_models=considered_models,
+            fallback_models=fallback_models,
+            max_estimated_cost_usd=max_estimated_cost_usd,
+            budget_violation=budget_violation,
+            budget_violation_reason=budget_violation_reason,
+            timestamp=timestamp,
+            cost_evidence_complete=False,
+            cost_quote=None,
+        )
+
+    raw_cost = row["raw_estimated_cost_usd"]
+    if raw_cost is None:
+        raise ValueError("route pricing evidence exists without stored route cost")
+    quote = PricingQuote(
+        amount_usd=float(raw_cost),
+        provider=str(row["pricing_provider"]),
+        model=str(row["pricing_model"]),
+        input_tokens=int(row["pricing_input_tokens"]),
+        output_tokens=int(row["pricing_output_tokens"]),
+        cached_input_tokens=int(row["pricing_cached_input_tokens"]),
+        input_per_million=float(row["pricing_input_per_million"]),
+        output_per_million=float(row["pricing_output_per_million"]),
+        cached_input_per_million=_optional_float(row["pricing_cached_input_per_million"]),
+        pricing_record_id=str(row["pricing_record_id"]),
+        pricing_table_version=str(row["pricing_table_version"]),
+        pricing_observed_at=date.fromisoformat(str(row["pricing_observed_at"])),
+        pricing_source_url=str(row["pricing_source_url"]),
+    )
+    return RouteTrace(
+        request_id=request_id,
+        strategy=strategy,
+        selected_model=selected_model,
+        estimated_cost_usd=quote.amount_usd,
+        estimated_latency_ms=estimated_latency_ms,
+        decision_reason=decision_reason,
+        considered_models=considered_models,
+        fallback_models=fallback_models,
+        max_estimated_cost_usd=max_estimated_cost_usd,
+        budget_violation=budget_violation,
+        budget_violation_reason=budget_violation_reason,
+        timestamp=timestamp,
+        cost_evidence_complete=True,
+        cost_quote=quote,
     )
 
 

@@ -3,9 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
+from math import isclose
 from uuid import UUID, uuid4
 
 from ...utils.time import utc_now
+from ..cost.pricing import PricingQuote
 
 
 class ModelTier(StrEnum):
@@ -99,7 +101,23 @@ class RoutingDecision:
     estimated_latency_ms: int
     estimated_quality_score: float
     decision_reason: str
+    cost_quote: PricingQuote | None = None
     fallback_models: list[ModelConfig] = field(default_factory=list)
     considered_models: list[str] = field(default_factory=list)
     timestamp: datetime = field(default_factory=utc_now)
     id: UUID = field(default_factory=uuid4)
+
+    def __post_init__(self) -> None:
+        if self.estimated_cost < 0:
+            raise ValueError("estimated_cost must be non-negative")
+        if self.cost_quote is None:
+            return
+        if self.cost_quote.model != self.selected_model.id:
+            raise ValueError("routing cost quote model must match selected model")
+        if not isclose(
+            self.estimated_cost,
+            self.cost_quote.amount_usd,
+            rel_tol=1e-12,
+            abs_tol=1e-12,
+        ):
+            raise ValueError("routing estimated_cost must equal cost quote amount")

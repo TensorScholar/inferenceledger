@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass
+from datetime import date
 from math import isclose
 from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from ...domain.cost.pricing import PRICING_TABLE_VERSION
+from ...domain.cost.pricing import PRICING_TABLE_VERSION, PricingQuote
 from ...domain.models.execution import (
     AttemptOutcome,
     CostEvidenceKind,
@@ -211,12 +212,17 @@ class JsonlRequestLog:
 
 @dataclass(frozen=True)
 class RouteTrace:
-    """One routing decision record for benchmark auditability."""
+    """One routing decision record with fail-closed pricing evidence.
+
+    New route traces carry the exact `PricingQuote` used during selection. Historical route rows
+    that contain only a numeric estimate are retained as raw history but are not exposed as complete
+    monetary evidence until matching pricing provenance exists.
+    """
 
     request_id: str
     strategy: str
     selected_model: str
-    estimated_cost_usd: float
+    estimated_cost_usd: float | None
     estimated_latency_ms: int
     decision_reason: str
     considered_models: list[str]
@@ -225,6 +231,24 @@ class RouteTrace:
     budget_violation: bool
     budget_violation_reason: str | None
     timestamp: str
+    cost_evidence_complete: bool = False
+    cost_quote: PricingQuote | None = None
+
+    def __post_init__(self) -> None:
+        if self.cost_evidence_complete:
+            if self.estimated_cost_usd is None or self.cost_quote is None:
+                raise ValueError("complete route cost evidence requires a pricing quote and cost")
+            if self.cost_quote.model != self.selected_model:
+                raise ValueError("route pricing quote model must match selected model")
+            if not isclose(
+                self.estimated_cost_usd,
+                self.cost_quote.amount_usd,
+                rel_tol=1e-12,
+                abs_tol=1e-12,
+            ):
+                raise ValueError("route estimated cost must equal pricing quote amount")
+        elif self.estimated_cost_usd is not None or self.cost_quote is not None:
+            raise ValueError("incomplete route cost evidence must not expose cost or pricing quote")
 
     @classmethod
     def from_decision(
@@ -235,11 +259,12 @@ class RouteTrace:
         budget_violation_reason: str | None = None,
     ) -> RouteTrace:
         budget_violation = budget_violation_reason is not None
+        quote = decision.cost_quote
         return cls(
             request_id=str(decision.request_id),
             strategy=decision.strategy.value,
             selected_model=decision.selected_model.id,
-            estimated_cost_usd=decision.estimated_cost,
+            estimated_cost_usd=quote.amount_usd if quote is not None else None,
             estimated_latency_ms=decision.estimated_latency_ms,
             decision_reason=decision.decision_reason,
             considered_models=decision.considered_models,
@@ -248,6 +273,8 @@ class RouteTrace:
             budget_violation=budget_violation,
             budget_violation_reason=budget_violation_reason,
             timestamp=decision.timestamp.isoformat(),
+            cost_evidence_complete=quote is not None,
+            cost_quote=quote,
         )
 
 
@@ -260,7 +287,7 @@ class JsonlRouteLog:
     def append(self, trace: RouteTrace) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(asdict(trace), sort_keys=True) + "\n")
+            handle.write(json.dumps(_route_trace_to_dict(trace), sort_keys=True) + "\n")
 
     def read_all(self) -> list[RouteTrace]:
         if not self.path.exists():
@@ -271,7 +298,7 @@ class JsonlRouteLog:
             for line in handle:
                 if not line.strip():
                     continue
-                traces.append(RouteTrace(**json.loads(line)))
+                traces.append(_route_trace_from_dict(json.loads(line)))
         return traces
 
 
@@ -341,6 +368,53 @@ def _request_trace_from_dict(raw: dict[str, Any]) -> RequestTrace:
         raw["cost_evidence_complete"] = True
 
     return RequestTrace(**raw)
+
+
+def _route_trace_to_dict(trace: RouteTrace) -> dict[str, Any]:
+    raw = asdict(trace)
+    quote = trace.cost_quote
+    if quote is not None:
+        raw_quote = raw["cost_quote"]
+        assert isinstance(raw_quote, dict)
+        raw_quote["pricing_observed_at"] = quote.pricing_observed_at.isoformat()
+    return raw
+
+
+def _route_trace_from_dict(raw: dict[str, Any]) -> RouteTrace:
+    normalized = dict(raw)
+    raw_quote = normalized.pop("cost_quote", None)
+    if raw_quote is None:
+        normalized["estimated_cost_usd"] = None
+        normalized["cost_evidence_complete"] = False
+        normalized["cost_quote"] = None
+        return RouteTrace(**normalized)
+    if not isinstance(raw_quote, dict):
+        raise ValueError("route cost_quote must be an object")
+
+    quote = _pricing_quote_from_dict(raw_quote)
+    normalized["cost_quote"] = quote
+    normalized["cost_evidence_complete"] = True
+    if normalized.get("estimated_cost_usd") is None:
+        normalized["estimated_cost_usd"] = quote.amount_usd
+    return RouteTrace(**normalized)
+
+
+def _pricing_quote_from_dict(raw: dict[str, Any]) -> PricingQuote:
+    return PricingQuote(
+        amount_usd=float(raw["amount_usd"]),
+        provider=str(raw["provider"]),
+        model=str(raw["model"]),
+        input_tokens=int(raw["input_tokens"]),
+        output_tokens=int(raw["output_tokens"]),
+        cached_input_tokens=int(raw["cached_input_tokens"]),
+        input_per_million=float(raw["input_per_million"]),
+        output_per_million=float(raw["output_per_million"]),
+        cached_input_per_million=_optional_float(raw.get("cached_input_per_million")),
+        pricing_record_id=str(raw["pricing_record_id"]),
+        pricing_table_version=str(raw["pricing_table_version"]),
+        pricing_observed_at=date.fromisoformat(str(raw["pricing_observed_at"])),
+        pricing_source_url=str(raw["pricing_source_url"]),
+    )
 
 
 def _provider_attempt_from_dict(raw: dict[str, Any]) -> ProviderAttempt:

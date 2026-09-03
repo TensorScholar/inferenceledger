@@ -28,7 +28,7 @@ class LoadBalancedRouter(AbstractRouter):
 
         selected = eligible[self.current_index % len(eligible)]
         self.current_index += 1
-        estimated_cost = self.cost_estimator.estimate(
+        cost_quote = self.cost_estimator.quote(
             model_id=selected.id,
             input_tokens=request.estimated_input_tokens,
             output_tokens=request.parameters.max_tokens,
@@ -47,9 +47,10 @@ class LoadBalancedRouter(AbstractRouter):
             fallback_models=[],
             strategy=RoutingStrategy.ROUND_ROBIN,
             complexity_estimate=None,
-            estimated_cost=estimated_cost,
+            estimated_cost=cost_quote.amount_usd,
             estimated_latency_ms=selected.avg_latency_ms,
             estimated_quality_score=0.7,
             decision_reason=f"Round-robin selection: {selected.id}",
+            cost_quote=cost_quote,
             considered_models=[model.id for model in eligible],
         )
