@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from math import isclose
 
 PRICING_TABLE_VERSION = "openai-standard-2026-09-03"
 PRICING_OBSERVED_AT = date(2026, 9, 3)
@@ -38,7 +39,7 @@ class ModelPricing:
 
 @dataclass(frozen=True)
 class PricingQuote:
-    """Calculated cost plus reconstructable usage and pricing assumptions."""
+    """Self-contained, reconstructable cost quote with immutable pricing assumptions."""
 
     amount_usd: float
     provider: str
@@ -46,6 +47,9 @@ class PricingQuote:
     input_tokens: int
     output_tokens: int
     cached_input_tokens: int
+    input_per_million: float
+    output_per_million: float
+    cached_input_per_million: float | None
     pricing_record_id: str
     pricing_table_version: str
     pricing_observed_at: date
@@ -58,6 +62,10 @@ class PricingQuote:
             raise ValueError("pricing quote token counts must be non-negative")
         if self.cached_input_tokens > self.input_tokens:
             raise ValueError("pricing quote cached_input_tokens cannot exceed input_tokens")
+        if min(self.input_per_million, self.output_per_million) < 0:
+            raise ValueError("pricing quote rates must be non-negative")
+        if self.cached_input_per_million is not None and self.cached_input_per_million < 0:
+            raise ValueError("pricing quote cached input rate must be non-negative")
         string_fields = (
             self.provider,
             self.model,
@@ -72,6 +80,22 @@ class PricingQuote:
         )
         if self.pricing_record_id != expected_record_id:
             raise ValueError("pricing_record_id must bind provider, model, and observation date")
+        expected_amount = self.reconstructed_amount_usd
+        if not isclose(self.amount_usd, expected_amount, rel_tol=1e-12, abs_tol=1e-12):
+            raise ValueError("pricing quote amount must match token and rate assumptions")
+
+    @property
+    def reconstructed_amount_usd(self) -> float:
+        billable_input_tokens = self.input_tokens - self.cached_input_tokens
+        input_cost = billable_input_tokens * self.input_per_million / 1_000_000
+        cached_rate = (
+            self.cached_input_per_million
+            if self.cached_input_per_million is not None
+            else self.input_per_million
+        )
+        cached_cost = self.cached_input_tokens * cached_rate / 1_000_000
+        output_cost = self.output_tokens * self.output_per_million / 1_000_000
+        return input_cost + cached_cost + output_cost
 
 
 _OPENAI_MODEL_DOC = "https://developers.openai.com/api/docs/models"
@@ -206,6 +230,9 @@ class PricingTable:
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cached_input_tokens=cached_input_tokens,
+            input_per_million=pricing.input_per_million,
+            output_per_million=pricing.output_per_million,
+            cached_input_per_million=pricing.cached_input_per_million,
             pricing_record_id=pricing.record_id,
             pricing_table_version=self.version,
             pricing_observed_at=pricing.observed_at,
