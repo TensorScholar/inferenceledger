@@ -16,7 +16,10 @@ from inference_engine.domain.models.execution import (
     CostEvidenceKind,
     ProviderAttempt,
 )
-from inference_engine.infrastructure.telemetry.request_log import RequestTrace, RouteTrace
+from inference_engine.infrastructure.telemetry.request_log import (
+    RequestTrace,
+    RouteTrace,
+)
 
 
 _PRICING_DATE = "2026-09-03"
