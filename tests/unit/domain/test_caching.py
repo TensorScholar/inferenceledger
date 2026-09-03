@@ -2,7 +2,9 @@
 
 import pytest
 
+from inference_engine.domain.caching.eviction import CostAwareEvictionPolicy
 from inference_engine.domain.caching.exact import ExactCache
+from inference_engine.domain.models.cache import CacheEntry, CacheKey
 from inference_engine.domain.models.request import InferenceRequest, ModelParameters
 from inference_engine.domain.models.response import CacheInfo, InferenceResponse, UsageMetrics
 from inference_engine.infrastructure.telemetry.request_log import RequestTrace
@@ -120,3 +122,27 @@ class TestExactCache:
         assert "misses" in metrics
         assert "hit_rate" in metrics
         assert "cache_size" in metrics
+
+
+def test_cost_aware_eviction_does_not_invent_value_for_unknown_cost() -> None:
+    policy = CostAwareEvictionPolicy()
+    key = CacheKey(content_hash="known", model="test", temperature=0.0, max_tokens=1)
+    known = CacheEntry(
+        key=key,
+        prompt="known",
+        response="known",
+        cost_usd=0.01,
+        access_count=5,
+    )
+    unknown = CacheEntry(
+        key=CacheKey(content_hash="unknown", model="test", temperature=0.0, max_tokens=1),
+        prompt="unknown",
+        response="unknown",
+        cost_usd=None,
+        access_count=5,
+    )
+
+    selected = policy.select_to_evict([known, unknown])
+
+    assert selected is unknown
+    assert unknown.cost_savings is None
