@@ -21,7 +21,6 @@ from inference_engine.infrastructure.telemetry.request_log import (
     RouteTrace,
 )
 
-
 _PRICING_DATE = "2026-09-03"
 _PRICING_SOURCE = "https://pricing.example/model-a"
 
@@ -203,6 +202,7 @@ def test_budget_rejection_is_not_treated_as_estimation_error() -> None:
     assert result.observed_execution_cost_usd == pytest.approx(0.0)
     assert result.cost_delta_usd is None
     assert result.deviation_direction == CostDeviationDirection.NOT_COMPARABLE
+    assert result.execution_succeeded is None
 
 
 def test_unknown_attempt_cost_blocks_reconciliation_math() -> None:
@@ -288,12 +288,13 @@ def test_known_failed_execution_remains_comparable_but_has_no_success_amplificat
     assert result.retry_amplification_ratio is None
 
 
-def test_run_summary_excludes_not_executed_and_missing_pairs_from_accuracy_metrics() -> None:
+def test_run_summary_counts_evidence_gaps_and_retry_tax_conservatively() -> None:
     comparable_route = _route("request-1")
     comparable_execution = _execution(
         "request-1",
         attempts=(
-            _priced_attempt(index=1, outcome=AttemptOutcome.SUCCEEDED, cost=0.001),
+            _priced_attempt(index=1, outcome=AttemptOutcome.FAILED, cost=0.00025),
+            _priced_attempt(index=2, outcome=AttemptOutcome.SUCCEEDED, cost=0.00075),
         ),
     )
     budget_route = _route("request-2")
@@ -325,7 +326,7 @@ def test_run_summary_excludes_not_executed_and_missing_pairs_from_accuracy_metri
     assert summary.request_count == 3
     assert summary.paired_request_count == 2
     assert summary.comparable_request_count == 1
-    assert summary.comparable_coverage == pytest.approx(0.5)
+    assert summary.comparable_coverage == pytest.approx(1 / 3)
     assert summary.not_executed_count == 1
     assert summary.missing_execution_count == 1
     assert summary.comparable_route_estimated_cost_usd == pytest.approx(0.0005)
@@ -338,6 +339,11 @@ def test_run_summary_excludes_not_executed_and_missing_pairs_from_accuracy_metri
     assert summary.underestimation_rate == pytest.approx(1.0)
     assert summary.overestimation_rate == pytest.approx(0.0)
     assert summary.matched_rate == pytest.approx(0.0)
+    assert summary.execution_path_divergence_count == 0
+    assert summary.execution_path_divergence_rate == pytest.approx(0.0)
+    assert summary.retry_amplification_eligible_request_count == 1
+    assert summary.non_final_attempt_cost_usd == pytest.approx(0.00025)
+    assert summary.retry_amplification_share == pytest.approx(0.25)
 
 
 def test_run_reconciliation_rejects_duplicate_request_ids() -> None:
