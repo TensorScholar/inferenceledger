@@ -4,9 +4,13 @@ from dataclasses import dataclass
 from enum import StrEnum
 from math import isclose
 from statistics import median
+from typing import TypeVar
 
 from ..domain.models.execution import AttemptOutcome
 from ..infrastructure.telemetry.request_log import RequestTrace, RouteTrace
+
+
+TTrace = TypeVar("TTrace", RouteTrace, RequestTrace)
 
 
 class ReconciliationStatus(StrEnum):
@@ -102,7 +106,12 @@ def reconcile_request_cost(
     if route is None and execution is None:
         raise ValueError("route and execution cannot both be missing")
 
-    request_id = route.request_id if route is not None else execution.request_id  # type: ignore[union-attr]
+    if route is not None:
+        request_id = route.request_id
+    else:
+        assert execution is not None
+        request_id = execution.request_id
+
     if route is None:
         assert execution is not None
         return _incomplete_reconciliation(
@@ -234,13 +243,19 @@ def reconcile_run_costs(
         ]
 
     under = sum(
-        1 for item in comparable if item.deviation_direction == CostDeviationDirection.UNDERESTIMATED
+        1
+        for item in comparable
+        if item.deviation_direction == CostDeviationDirection.UNDERESTIMATED
     )
     over = sum(
-        1 for item in comparable if item.deviation_direction == CostDeviationDirection.OVERESTIMATED
+        1
+        for item in comparable
+        if item.deviation_direction == CostDeviationDirection.OVERESTIMATED
     )
     matched = sum(
-        1 for item in comparable if item.deviation_direction == CostDeviationDirection.MATCHED
+        1
+        for item in comparable
+        if item.deviation_direction == CostDeviationDirection.MATCHED
     )
     non_final_values = [
         item.non_final_attempt_cost_usd
@@ -391,12 +406,12 @@ def _deviation_direction(route_cost: float, execution_cost: float) -> CostDeviat
     return CostDeviationDirection.OVERESTIMATED
 
 
-def _unique_by_request_id[T: RouteTrace | RequestTrace](
-    values: list[T],
+def _unique_by_request_id(
+    values: list[TTrace],
     *,
     kind: str,
-) -> dict[str, T]:
-    result: dict[str, T] = {}
+) -> dict[str, TTrace]:
+    result: dict[str, TTrace] = {}
     for value in values:
         if value.request_id in result:
             raise ValueError(f"duplicate {kind} request_id: {value.request_id}")
