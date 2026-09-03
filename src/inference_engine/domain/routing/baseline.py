@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ..cost.pricing import PricingQuote
 from ..models.request import InferenceRequest
 from ..models.routing import (
     ComplexityEstimate,
@@ -105,7 +106,7 @@ class BaselineRouter(AbstractRouter):
             key=lambda model: self._quote_cost(model, request).amount_usd,
         )
 
-    def _quote_cost(self, model: ModelConfig, request: InferenceRequest):
+    def _quote_cost(self, model: ModelConfig, request: InferenceRequest) -> PricingQuote:
         return self.cost_estimator.quote(
             model_id=model.id,
             input_tokens=request.estimated_input_tokens,
