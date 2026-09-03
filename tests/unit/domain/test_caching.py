@@ -5,6 +5,7 @@ import pytest
 from inference_engine.domain.caching.exact import ExactCache
 from inference_engine.domain.models.request import InferenceRequest, ModelParameters
 from inference_engine.domain.models.response import CacheInfo, InferenceResponse, UsageMetrics
+from inference_engine.infrastructure.telemetry.request_log import RequestTrace
 
 
 @pytest.fixture
@@ -56,6 +57,12 @@ class TestExactCache:
         assert response.usage.completion_tokens == 0
         assert response.usage.total_tokens == 0
         assert response.usage.cost_usd == 0.0
+
+        trace = RequestTrace.from_response(provider="local-cache", response=response)
+        assert trace.provider_attempt_count == 0
+        assert trace.estimated_cost_usd == 0.0
+        assert trace.cost_evidence_complete is True
+        assert trace.pricing_table_version == "not_charged"
 
     @pytest.mark.asyncio
     async def test_cache_miss(self, sample_request):
