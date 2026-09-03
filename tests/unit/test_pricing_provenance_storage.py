@@ -86,10 +86,10 @@ def test_sqlite_round_trip_preserves_attempt_pricing_provenance(tmp_path) -> Non
             "SELECT value FROM ledger_metadata WHERE key = 'schema_version'"
         ).fetchone()
     assert schema_version == (str(SCHEMA_VERSION),)
-    assert SCHEMA_VERSION == 5
+    assert SCHEMA_VERSION == 6
 
 
-def test_sqlite_v5_migration_invalidates_pre_provenance_calculated_attempt(tmp_path) -> None:
+def test_sqlite_migration_invalidates_pre_provenance_calculated_attempt(tmp_path) -> None:
     path = tmp_path / "ledger.sqlite3"
     ledger = SQLiteBenchmarkLedger(path)
     _record_run(ledger, tmp_path)
