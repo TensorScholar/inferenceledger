@@ -726,27 +726,36 @@ def _require_complete_route_cost_evidence(route: RouteTrace) -> None:
 
 
 def _route_from_row(row: sqlite3.Row) -> RouteTrace:
-    common = {
-        "request_id": str(row["request_id"]),
-        "strategy": str(row["strategy"]),
-        "selected_model": str(row["selected_model"]),
-        "estimated_latency_ms": int(row["estimated_latency_ms"]),
-        "decision_reason": str(row["decision_reason"]),
-        "considered_models": [
-            str(item) for item in json.loads(str(row["considered_models_json"]))
-        ],
-        "fallback_models": [
-            str(item) for item in json.loads(str(row["fallback_models_json"]))
-        ],
-        "max_estimated_cost_usd": _optional_float(row["max_estimated_cost_usd"]),
-        "budget_violation": bool(row["budget_violation"]),
-        "budget_violation_reason": _optional_str(row["budget_violation_reason"]),
-        "timestamp": str(row["timestamp"]),
-    }
+    request_id = str(row["request_id"])
+    strategy = str(row["strategy"])
+    selected_model = str(row["selected_model"])
+    estimated_latency_ms = int(row["estimated_latency_ms"])
+    decision_reason = str(row["decision_reason"])
+    considered_models = [
+        str(item) for item in json.loads(str(row["considered_models_json"]))
+    ]
+    fallback_models = [
+        str(item) for item in json.loads(str(row["fallback_models_json"]))
+    ]
+    max_estimated_cost_usd = _optional_float(row["max_estimated_cost_usd"])
+    budget_violation = bool(row["budget_violation"])
+    budget_violation_reason = _optional_str(row["budget_violation_reason"])
+    timestamp = str(row["timestamp"])
+
     if row["pricing_record_id"] is None:
         return RouteTrace(
-            **common,
+            request_id=request_id,
+            strategy=strategy,
+            selected_model=selected_model,
             estimated_cost_usd=None,
+            estimated_latency_ms=estimated_latency_ms,
+            decision_reason=decision_reason,
+            considered_models=considered_models,
+            fallback_models=fallback_models,
+            max_estimated_cost_usd=max_estimated_cost_usd,
+            budget_violation=budget_violation,
+            budget_violation_reason=budget_violation_reason,
+            timestamp=timestamp,
             cost_evidence_complete=False,
             cost_quote=None,
         )
@@ -770,8 +779,18 @@ def _route_from_row(row: sqlite3.Row) -> RouteTrace:
         pricing_source_url=str(row["pricing_source_url"]),
     )
     return RouteTrace(
-        **common,
+        request_id=request_id,
+        strategy=strategy,
+        selected_model=selected_model,
         estimated_cost_usd=quote.amount_usd,
+        estimated_latency_ms=estimated_latency_ms,
+        decision_reason=decision_reason,
+        considered_models=considered_models,
+        fallback_models=fallback_models,
+        max_estimated_cost_usd=max_estimated_cost_usd,
+        budget_violation=budget_violation,
+        budget_violation_reason=budget_violation_reason,
+        timestamp=timestamp,
         cost_evidence_complete=True,
         cost_quote=quote,
     )
