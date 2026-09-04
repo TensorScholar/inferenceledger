@@ -187,9 +187,10 @@ def test_segment_evidence_uses_dynamic_tags_and_failed_spend_in_unit_cost() -> N
     assert task.success_count == 1
     assert task.failure_count == 1
     assert task.error_rate == pytest.approx(0.5)
+    assert task.latency_sample_count == 1
     assert task.latency_p50_ms == 10
-    assert task.latency_p95_ms == 100
-    assert task.latency_p99_ms == 100
+    assert task.latency_p95_ms == 10
+    assert task.latency_p99_ms == 10
     assert task.estimated_cost_usd == pytest.approx(0.002)
     assert task.cost_per_success_usd == pytest.approx(0.002)
     assert task.quality_count == 1
@@ -234,6 +235,25 @@ def test_unknown_cost_suppresses_segment_cost_and_unit_economics() -> None:
     assert segment.estimated_cost_usd is None
     assert segment.cost_per_success_usd is None
     assert segment.cost_per_accepted_outcome_usd is None
+
+
+def test_segment_with_no_success_has_no_latency_claim() -> None:
+    contexts = [_context("request-1", "item-1", {"task": "qa"})]
+    traces = [
+        _trace(
+            "request-1",
+            latency_ms=1,
+            error_type="provider_unavailable",
+            quality_passed=None,
+        )
+    ]
+
+    segment = summarize_segments(request_contexts=contexts, traces=traces).segments[0]
+
+    assert segment.latency_sample_count == 0
+    assert segment.latency_p50_ms is None
+    assert segment.latency_p95_ms is None
+    assert segment.latency_p99_ms is None
 
 
 def test_empty_contexts_are_explicitly_unavailable_for_legacy_runs() -> None:
