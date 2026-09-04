@@ -238,15 +238,14 @@ def _summarize_segment(
     quality_pass_rate = (
         quality_pass_count / len(quality_traces) if quality_traces else None
     )
-    accepted_outcome_evidence_complete = (
-        bool(success_traces)
+    cost_per_accepted: float | None = None
+    if (
+        total_cost is not None
+        and success_traces
         and len(quality_traces) == len(success_traces)
         and quality_pass_count > 0
-        and total_cost is not None
-    )
-    cost_per_accepted = (
-        total_cost / quality_pass_count if accepted_outcome_evidence_complete else None
-    )
+    ):
+        cost_per_accepted = total_cost / quality_pass_count
 
     reconciliation = reconcile_run_costs(routes=segment_routes, executions=traces)
     model_distribution: dict[str, int] = {}
