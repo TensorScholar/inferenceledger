@@ -8,10 +8,11 @@ from statistics import NormalDist, fmean
 
 
 class StatisticalEvidenceStatus(StrEnum):
-    """Whether a paired estimate has enough observations for configured inference."""
+    """Whether a paired estimate supports the configured inferential claim."""
 
     SUFFICIENT = "sufficient"
     INSUFFICIENT_SAMPLE = "insufficient_sample"
+    INSUFFICIENT_VARIATION = "insufficient_variation"
     NO_EVIDENCE = "no_evidence"
 
 
@@ -19,13 +20,15 @@ class StatisticalEvidenceStatus(StrEnum):
 class PairedBootstrapConfig:
     """Explicit product policy for central paired uncertainty estimates.
 
-    `minimum_samples` is a safety policy, not a theorem that guarantees statistical power.
-    The caller must keep effect-size tolerances and domain risk in the decision layer.
+    `minimum_samples` and `minimum_changed_pairs` are conservative product policies, not
+    universal theorems guaranteeing statistical power. Effect-size tolerances and domain risk
+    remain decision-layer concerns.
     """
 
     confidence_level: float = 0.95
     bootstrap_iterations: int = 10_000
     minimum_samples: int = 30
+    minimum_changed_pairs: int = 0
     seed: int = 0
 
     def __post_init__(self) -> None:
@@ -35,6 +38,8 @@ class PairedBootstrapConfig:
             raise ValueError("bootstrap_iterations must be at least 1000")
         if self.minimum_samples < 2:
             raise ValueError("minimum_samples must be at least 2")
+        if self.minimum_changed_pairs < 0:
+            raise ValueError("minimum_changed_pairs must be non-negative")
 
 
 @dataclass(frozen=True)
@@ -44,6 +49,9 @@ class PairedMeanDifferenceEstimate:
     status: StatisticalEvidenceStatus
     sample_count: int
     minimum_sample_count: int
+    changed_pair_count: int
+    minimum_changed_pair_count: int
+    unique_difference_count: int
     observed_mean_difference: float | None
     confidence_level: float
     confidence_interval_low: float | None
@@ -73,6 +81,10 @@ def paired_mean_difference_bca(
     Resampling is performed over paired differences, which is equivalent to resampling intact
     matched workload items. This primitive is for central mean-difference inference only; it must
     not be reused for high-tail quantile confidence intervals such as p95/p99.
+
+    A sample with no empirical variation cannot identify sampling uncertainty. In that case the
+    observed effect is retained but no confidence interval is emitted; a degenerate bootstrap
+    interval such as ``[d, d]`` would overstate certainty.
     """
     resolved = config or PairedBootstrapConfig()
     if len(baseline) != len(candidate):
@@ -88,21 +100,34 @@ def paired_mean_difference_bca(
             sample_count=0,
         )
 
-    differences = [candidate_value - baseline_value for baseline_value, candidate_value in zip(baseline, candidate, strict=True)]
+    differences = [
+        candidate_value - baseline_value
+        for baseline_value, candidate_value in zip(baseline, candidate, strict=True)
+    ]
     observed = fmean(differences)
-    zero_variance = all(value == differences[0] for value in differences)
+    changed_pair_count = sum(1 for value in differences if value != 0.0)
+    unique_difference_count = len(set(differences))
+    zero_variance = unique_difference_count == 1
+
     if sample_count < resolved.minimum_samples:
-        return PairedMeanDifferenceEstimate(
+        return _non_interval_estimate(
             status=StatisticalEvidenceStatus.INSUFFICIENT_SAMPLE,
+            config=resolved,
             sample_count=sample_count,
-            minimum_sample_count=resolved.minimum_samples,
-            observed_mean_difference=observed,
-            confidence_level=resolved.confidence_level,
-            confidence_interval_low=None,
-            confidence_interval_high=None,
-            method="paired_bca_bootstrap_mean_difference",
-            bootstrap_iterations=resolved.bootstrap_iterations,
-            seed=resolved.seed,
+            changed_pair_count=changed_pair_count,
+            unique_difference_count=unique_difference_count,
+            observed=observed,
+            zero_variance=zero_variance,
+        )
+
+    if zero_variance or changed_pair_count < resolved.minimum_changed_pairs:
+        return _non_interval_estimate(
+            status=StatisticalEvidenceStatus.INSUFFICIENT_VARIATION,
+            config=resolved,
+            sample_count=sample_count,
+            changed_pair_count=changed_pair_count,
+            unique_difference_count=unique_difference_count,
+            observed=observed,
             zero_variance=zero_variance,
         )
 
@@ -125,6 +150,9 @@ def paired_mean_difference_bca(
         status=StatisticalEvidenceStatus.SUFFICIENT,
         sample_count=sample_count,
         minimum_sample_count=resolved.minimum_samples,
+        changed_pair_count=changed_pair_count,
+        minimum_changed_pair_count=resolved.minimum_changed_pairs,
+        unique_difference_count=unique_difference_count,
         observed_mean_difference=observed,
         confidence_level=resolved.confidence_level,
         confidence_interval_low=interval_low,
@@ -213,7 +241,7 @@ def _adjusted_probability(
     z = normal.inv_cdf(nominal_probability)
     shifted = bias_correction + z
     denominator = 1 - acceleration * shifted
-    if denominator == 0:
+    if abs(denominator) < 1e-15:
         return nominal_probability
     return normal.cdf(bias_correction + shifted / denominator)
 
@@ -232,6 +260,34 @@ def _linear_quantile(ordered: list[float], probability: float) -> float:
     return ordered[lower_index] * (1 - weight) + ordered[upper_index] * weight
 
 
+def _non_interval_estimate(
+    *,
+    status: StatisticalEvidenceStatus,
+    config: PairedBootstrapConfig,
+    sample_count: int,
+    changed_pair_count: int,
+    unique_difference_count: int,
+    observed: float,
+    zero_variance: bool,
+) -> PairedMeanDifferenceEstimate:
+    return PairedMeanDifferenceEstimate(
+        status=status,
+        sample_count=sample_count,
+        minimum_sample_count=config.minimum_samples,
+        changed_pair_count=changed_pair_count,
+        minimum_changed_pair_count=config.minimum_changed_pairs,
+        unique_difference_count=unique_difference_count,
+        observed_mean_difference=observed,
+        confidence_level=config.confidence_level,
+        confidence_interval_low=None,
+        confidence_interval_high=None,
+        method="paired_bca_bootstrap_mean_difference",
+        bootstrap_iterations=config.bootstrap_iterations,
+        seed=config.seed,
+        zero_variance=zero_variance,
+    )
+
+
 def _empty_estimate(
     *,
     status: StatisticalEvidenceStatus,
@@ -242,6 +298,9 @@ def _empty_estimate(
         status=status,
         sample_count=sample_count,
         minimum_sample_count=config.minimum_samples,
+        changed_pair_count=0,
+        minimum_changed_pair_count=config.minimum_changed_pairs,
+        unique_difference_count=0,
         observed_mean_difference=None,
         confidence_level=config.confidence_level,
         confidence_interval_low=None,
