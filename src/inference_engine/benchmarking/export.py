@@ -140,9 +140,10 @@ def export_run_markdown(
             "",
             "## Route Estimate vs Observed Execution",
             "",
+            f"- Request universe: {reconciliation.request_count}",
             f"- Paired requests: {reconciliation.paired_request_count}",
             f"- Comparable requests: {reconciliation.comparable_request_count}",
-            f"- Comparable coverage: {_format_rate(reconciliation.comparable_coverage)}",
+            f"- Comparable coverage of request universe: {_format_rate(reconciliation.comparable_coverage)}",
             f"- Comparable successes: {reconciliation.comparable_success_count}",
             f"- Comparable failures: {reconciliation.comparable_failure_count}",
             f"- Not executed: {reconciliation.not_executed_count}",
@@ -150,6 +151,8 @@ def export_run_markdown(
             f"- Execution cost incomplete: {reconciliation.execution_cost_incomplete_count}",
             f"- Missing route: {reconciliation.missing_route_count}",
             f"- Missing execution: {reconciliation.missing_execution_count}",
+            f"- Execution-path divergences among comparable requests: {reconciliation.execution_path_divergence_count}",
+            f"- Execution-path divergence rate among comparable requests: {_format_optional_rate(reconciliation.execution_path_divergence_rate)}",
             f"- Comparable route estimate: {_format_optional_cost(reconciliation.comparable_route_estimated_cost_usd)}",
             f"- Comparable observed execution cost: {_format_optional_cost(reconciliation.comparable_observed_execution_cost_usd)}",
             f"- Observed minus route estimate: {_format_optional_signed_cost(reconciliation.comparable_cost_delta_usd)}",
@@ -160,8 +163,9 @@ def export_run_markdown(
             f"- Underestimation rate: {_format_optional_rate(reconciliation.underestimation_rate)}",
             f"- Overestimation rate: {_format_optional_rate(reconciliation.overestimation_rate)}",
             f"- Matched rate: {_format_optional_rate(reconciliation.matched_rate)}",
-            f"- Known non-final attempt cost: {_format_optional_cost(reconciliation.non_final_attempt_cost_usd)}",
-            f"- Retry amplification share of comparable execution cost: {_format_optional_rate(reconciliation.retry_amplification_share)}",
+            f"- Retry-amplification eligible successful requests: {reconciliation.retry_amplification_eligible_request_count}",
+            f"- Known non-final attempt cost within amplification-eligible requests: {_format_optional_cost(reconciliation.non_final_attempt_cost_usd)}",
+            f"- Retry amplification share of amplification-eligible execution cost: {_format_optional_rate(reconciliation.retry_amplification_share)}",
             "",
         ]
     )
@@ -261,7 +265,10 @@ def export_run_markdown(
         lines.append(f"- {limitation}")
     lines.append("- Route cost is defensible only when route cost evidence is complete.")
     lines.append(
-        "- Reconciliation metrics include only paired requests with complete route and execution cost evidence and at least one provider attempt."
+        "- Cost-delta and deviation metrics use only paired requests with complete route and execution cost evidence and at least one provider attempt; comparable coverage and evidence-gap counts use the full logical request universe."
+    )
+    lines.append(
+        "- Retry amplification is reported only for successful comparable executions whose final-attempt cost is reconstructable; its denominator is the execution cost of that eligible population, not every request in the run."
     )
     lines.append("- This export is evidence for one run only; compare runs before discussing cost deltas.")
     lines.append("")
