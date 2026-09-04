@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from math import floor, isfinite
+from math import exp, floor, isfinite, lgamma, log, log1p
 from random import Random
 from statistics import NormalDist, fmean
 
@@ -164,6 +164,40 @@ def paired_mean_difference_bca(
     )
 
 
+def exact_binomial_upper_confidence_bound(
+    *,
+    event_count: int,
+    trial_count: int,
+    confidence_level: float = 0.95,
+) -> float:
+    """Return the one-sided exact Clopper-Pearson upper bound for an event rate.
+
+    The returned value U solves ``P[X <= event_count | p=U] = 1-confidence_level``
+    for ``X ~ Binomial(trial_count, p)`` when event_count < trial_count. This is useful for
+    non-compensatory safety gates such as baseline-good -> candidate-bad transition rates.
+    """
+    if trial_count < 1:
+        raise ValueError("trial_count must be positive")
+    if event_count < 0 or event_count > trial_count:
+        raise ValueError("event_count must be between 0 and trial_count")
+    if not 0 < confidence_level < 1:
+        raise ValueError("confidence_level must be between 0 and 1")
+    if event_count == trial_count:
+        return 1.0
+
+    alpha = 1.0 - confidence_level
+    low = event_count / trial_count
+    high = 1.0
+    for _ in range(80):
+        midpoint = (low + high) / 2
+        cdf = _binomial_cdf(event_count, trial_count, midpoint)
+        if cdf > alpha:
+            low = midpoint
+        else:
+            high = midpoint
+    return high
+
+
 def _bootstrap_means(
     sample: list[float],
     *,
@@ -258,6 +292,27 @@ def _linear_quantile(ordered: list[float], probability: float) -> float:
     upper_index = min(lower_index + 1, len(ordered) - 1)
     weight = position - lower_index
     return ordered[lower_index] * (1 - weight) + ordered[upper_index] * weight
+
+
+def _binomial_cdf(event_count: int, trial_count: int, probability: float) -> float:
+    if probability <= 0:
+        return 1.0
+    if probability >= 1:
+        return 1.0 if event_count == trial_count else 0.0
+
+    log_probability = log(probability)
+    log_inverse_probability = log1p(-probability)
+    terms = [
+        lgamma(trial_count + 1)
+        - lgamma(index + 1)
+        - lgamma(trial_count - index + 1)
+        + index * log_probability
+        + (trial_count - index) * log_inverse_probability
+        for index in range(event_count + 1)
+    ]
+    maximum = max(terms)
+    value = exp(maximum) * sum(exp(term - maximum) for term in terms)
+    return min(max(value, 0.0), 1.0)
 
 
 def _non_interval_estimate(
