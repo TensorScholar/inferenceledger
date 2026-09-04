@@ -82,6 +82,7 @@ class BenchmarkComparison:
 
 def load_workload(path: Path) -> list[WorkloadItem]:
     items: list[WorkloadItem] = []
+    seen_item_ids: set[str] = set()
     with path.open("r", encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, start=1):
             if not line.strip():
@@ -90,18 +91,27 @@ def load_workload(path: Path) -> list[WorkloadItem]:
             item_id = raw.get("id")
             prompt = raw.get("prompt")
             tags = raw.get("tags", {})
-            if not isinstance(item_id, str) or not item_id:
+            if not isinstance(item_id, str) or not item_id.strip():
                 raise ValueError(f"{path}:{line_number} missing string id")
+            if item_id in seen_item_ids:
+                raise ValueError(f"{path}:{line_number} duplicate workload item id: {item_id}")
             if not isinstance(prompt, str) or not prompt:
                 raise ValueError(f"{path}:{line_number} missing string prompt")
             if not isinstance(tags, dict) or not all(
-                isinstance(key, str) and isinstance(value, str) for key, value in tags.items()
+                isinstance(key, str)
+                and isinstance(value, str)
+                and bool(key.strip())
+                and bool(value.strip())
+                for key, value in tags.items()
             ):
-                raise ValueError(f"{path}:{line_number} tags must be an object of strings")
+                raise ValueError(
+                    f"{path}:{line_number} tags must be an object of non-empty strings"
+                )
             try:
                 eval_spec = parse_eval_spec(raw.get("eval"))
             except ValueError as exc:
                 raise ValueError(f"{path}:{line_number} invalid eval: {exc}") from exc
+            seen_item_ids.add(item_id)
             items.append(WorkloadItem(id=item_id, prompt=prompt, tags=tags, eval_spec=eval_spec))
     if not items:
         raise ValueError(f"{path} did not contain any workload items")

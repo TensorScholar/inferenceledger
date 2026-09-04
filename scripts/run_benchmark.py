@@ -10,6 +10,7 @@ from time import perf_counter
 from uuid import uuid4
 
 from inference_engine.benchmarking.budget import BudgetViolation, enforce_estimated_cost_budget
+from inference_engine.benchmarking.context_store import SQLiteBenchmarkContextStore
 from inference_engine.benchmarking.eval import evaluate_text
 from inference_engine.benchmarking.export import export_run_json, export_run_markdown
 from inference_engine.benchmarking.harness import (
@@ -18,6 +19,10 @@ from inference_engine.benchmarking.harness import (
     summarize_traces,
     write_comparison,
     write_report,
+)
+from inference_engine.benchmarking.segmentation import (
+    BenchmarkRequestContext,
+    summarize_segments,
 )
 from inference_engine.benchmarking.sqlite_ledger import SQLiteBenchmarkLedger
 from inference_engine.domain.cost.routing_estimator import ProviderPricingCostEstimator
@@ -98,6 +103,10 @@ def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--ledger-path", default="reports/benchmarks/latest-ledger.jsonl")
     parser.add_argument("--sqlite-ledger-path", default="reports/benchmarks/ledger.sqlite3")
     parser.add_argument("--report-path", default="reports/benchmarks/latest-report.json")
+    parser.add_argument(
+        "--segment-report-path",
+        default="reports/benchmarks/latest-segments.json",
+    )
     parser.add_argument("--route-ledger-path", default="reports/benchmarks/latest-routes.jsonl")
     parser.add_argument("--max-estimated-cost-usd", type=float, default=None)
     parser.add_argument("--policy-latency-slo-ms", type=int, default=None)
@@ -125,11 +134,19 @@ async def _run(args: argparse.Namespace) -> int:
     ledger_path = Path(args.ledger_path)
     sqlite_ledger_path = Path(args.sqlite_ledger_path)
     report_path = Path(args.report_path)
+    segment_report_path = Path(
+        getattr(
+            args,
+            "segment_report_path",
+            str(report_path.with_name(f"{report_path.stem}-segments.json")),
+        )
+    )
     run_id = args.run_id or f"{args.strategy}-{uuid4().hex[:12]}"
     workload = load_workload(workload_path)
     request_log = JsonlRequestLog(ledger_path)
     route_log = JsonlRouteLog(Path(args.route_ledger_path))
     sqlite_ledger = SQLiteBenchmarkLedger(sqlite_ledger_path)
+    context_store = SQLiteBenchmarkContextStore(sqlite_ledger_path)
     router = _build_router(args)
     backends: dict[str, OpenAIBackend] = {}
 
@@ -154,6 +171,7 @@ async def _run(args: argparse.Namespace) -> int:
 
     traces: list[RequestTrace] = []
     route_traces: list[RouteTrace] = []
+    request_contexts: list[BenchmarkRequestContext] = []
     for item in workload:
         request = InferenceRequest(
             prompt=item.prompt,
@@ -161,6 +179,13 @@ async def _run(args: argparse.Namespace) -> int:
                 max_tokens=args.max_tokens,
                 temperature=args.temperature,
             ),
+        )
+        request_contexts.append(
+            BenchmarkRequestContext.from_tags(
+                request_id=str(request.id),
+                workload_item_id=item.id,
+                tags=item.tags,
+            )
         )
         decision = await router.route(request)
         route_trace = RouteTrace.from_decision(
@@ -238,13 +263,24 @@ async def _run(args: argparse.Namespace) -> int:
         traces=traces,
         route_traces=route_traces,
     )
+    segment_evidence = summarize_segments(
+        request_contexts=request_contexts,
+        traces=traces,
+        routes=route_traces,
+    )
     write_report(report, report_path)
+    segment_report_path.parent.mkdir(parents=True, exist_ok=True)
+    segment_report_path.write_text(
+        json.dumps(asdict(segment_evidence), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     sqlite_ledger.record_run(
         run_id=run_id,
         report=report,
         traces=traces,
         route_traces=route_traces,
     )
+    context_store.record_contexts(run_id=run_id, contexts=request_contexts)
     print(
         " ".join(
             [
@@ -257,7 +293,9 @@ async def _run(args: argparse.Namespace) -> int:
                 f"latency_p95_ms={report.latency_p95_ms}",
                 f"execution_cost_usd={_format_optional_cost_value(report.estimated_cost_usd)}",
                 f"cost_evidence_complete={str(report.cost_evidence_complete).lower()}",
+                f"segments={segment_evidence.segment_count}",
                 f"report_path={report_path}",
+                f"segment_report_path={segment_report_path}",
                 f"sqlite_ledger_path={sqlite_ledger_path}",
             ]
         )
@@ -293,7 +331,8 @@ def _compare(args: argparse.Namespace) -> int:
 
 
 def _export(args: argparse.Namespace) -> int:
-    sqlite_ledger = SQLiteBenchmarkLedger(Path(args.sqlite_ledger_path))
+    sqlite_ledger_path = Path(args.sqlite_ledger_path)
+    sqlite_ledger = SQLiteBenchmarkLedger(sqlite_ledger_path)
     report = sqlite_ledger.get_report(args.run_id)
     traces = sqlite_ledger.get_traces(args.run_id)
     routes = sqlite_ledger.get_routes(args.run_id)
@@ -316,6 +355,20 @@ def _export(args: argparse.Namespace) -> int:
             provider_usage_summary=provider_usage_summary,
         )
         written.append(path)
+
+    contexts = SQLiteBenchmarkContextStore(sqlite_ledger_path).get_contexts(args.run_id)
+    segment_evidence = summarize_segments(
+        request_contexts=contexts,
+        traces=traces,
+        routes=routes,
+    )
+    segment_path = output_dir / f"{args.run_id}.segments.json"
+    segment_path.parent.mkdir(parents=True, exist_ok=True)
+    segment_path.write_text(
+        json.dumps(asdict(segment_evidence), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    written.append(segment_path)
 
     print(" ".join([f"run_id={args.run_id}", *[f"written={path}" for path in written]]))
     return 0
