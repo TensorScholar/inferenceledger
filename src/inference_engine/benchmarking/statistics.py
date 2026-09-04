@@ -228,7 +228,7 @@ def _jackknife_acceleration(sample: list[float]) -> float:
         return 0.0
     numerator = sum(value**3 for value in centered)
     denominator = 6 * (squared_sum**1.5)
-    return numerator / denominator
+    return float(numerator / denominator)
 
 
 def _adjusted_probability(
