@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
 from hashlib import sha256
 from pathlib import Path
-from typing import Callable
 
 from ..infrastructure.telemetry.request_log import RequestTrace
 from .harness import BenchmarkReport
