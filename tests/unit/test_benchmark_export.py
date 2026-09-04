@@ -75,7 +75,7 @@ def _route() -> RouteTrace:
     )
 
 
-def test_export_run_json_writes_report_traces_routes_and_pricing_evidence(tmp_path) -> None:
+def test_export_run_json_writes_report_traces_routes_and_reconciliation(tmp_path) -> None:
     traces = [_trace()]
     routes = [_route()]
     report = summarize_traces(
@@ -89,7 +89,13 @@ def test_export_run_json_writes_report_traces_routes_and_pricing_evidence(tmp_pa
     )
     output_path = tmp_path / "run.json"
 
-    export_run_json(run_id="run-1", report=report, traces=traces, routes=routes, output_path=output_path)
+    export_run_json(
+        run_id="run-1",
+        report=report,
+        traces=traces,
+        routes=routes,
+        output_path=output_path,
+    )
 
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert payload["run_id"] == "run-1"
@@ -99,9 +105,16 @@ def test_export_run_json_writes_report_traces_routes_and_pricing_evidence(tmp_pa
     assert payload["routes"][0]["cost_evidence_complete"] is True
     assert payload["routes"][0]["cost_quote"]["pricing_observed_at"] == "2026-09-03"
     assert payload["routes"][0]["cost_quote"]["input_per_million"] == 50.0
+    reconciliation = payload["cost_reconciliation"]
+    assert reconciliation["paired_request_count"] == 1
+    assert reconciliation["comparable_request_count"] == 1
+    assert reconciliation["comparable_coverage"] == 1.0
+    assert reconciliation["comparable_cost_delta_usd"] == 0.0
+    assert reconciliation["matched_rate"] == 1.0
+    assert reconciliation["request_reconciliations"][0]["status"] == "comparable_success"
 
 
-def test_export_run_markdown_writes_summary(tmp_path) -> None:
+def test_export_run_markdown_writes_reconciliation_summary(tmp_path) -> None:
     traces = [_trace()]
     routes = [_route()]
     report = summarize_traces(
@@ -148,6 +161,10 @@ def test_export_run_markdown_writes_summary(tmp_path) -> None:
     assert "| `test-model` | 15 |" in raw
     assert "- Provider attempts: 1" in raw
     assert "- Provider retries: 0" in raw
+    assert "## Route Estimate vs Observed Execution" in raw
+    assert "- Comparable coverage: 100.00%" in raw
+    assert "- Matched rate: 100.00%" in raw
+    assert "`comparable_success`" in raw
     assert "## Route Decisions" in raw
     assert "Pricing evidence for `request-1`" in raw
     assert "`openai:test-model:2026-09-03`" in raw
@@ -155,7 +172,7 @@ def test_export_run_markdown_writes_summary(tmp_path) -> None:
     assert "## Limitations" in raw
 
 
-def test_export_cli_writes_both_formats(tmp_path) -> None:
+def test_export_cli_writes_both_formats_with_reconciliation(tmp_path) -> None:
     ledger = SQLiteBenchmarkLedger(tmp_path / "ledger.sqlite3")
     traces = [_trace()]
     routes = [_route()]
@@ -188,4 +205,7 @@ def test_export_cli_writes_both_formats(tmp_path) -> None:
     assert exported["routes"][0]["cost_quote"]["pricing_record_id"] == (
         "openai:test-model:2026-09-03"
     )
-    assert "## Provider Usage Summary" in markdown_path.read_text(encoding="utf-8")
+    assert exported["cost_reconciliation"]["comparable_request_count"] == 1
+    markdown = markdown_path.read_text(encoding="utf-8")
+    assert "## Provider Usage Summary" in markdown
+    assert "## Route Estimate vs Observed Execution" in markdown
