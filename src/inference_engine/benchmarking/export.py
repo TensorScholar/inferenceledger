@@ -143,7 +143,7 @@ def export_run_markdown(
             f"- Request universe: {reconciliation.request_count}",
             f"- Paired requests: {reconciliation.paired_request_count}",
             f"- Comparable requests: {reconciliation.comparable_request_count}",
-            f"- Comparable coverage of request universe: {_format_rate(reconciliation.comparable_coverage)}",
+            f"- Comparable coverage: {_format_rate(reconciliation.comparable_coverage)} (of request universe)",
             f"- Comparable successes: {reconciliation.comparable_success_count}",
             f"- Comparable failures: {reconciliation.comparable_failure_count}",
             f"- Not executed: {reconciliation.not_executed_count}",
