@@ -6,7 +6,7 @@ from math import ceil
 from ..infrastructure.telemetry.request_log import RequestTrace, RouteTrace
 from .reconciliation import reconcile_run_costs
 
-_LATENCY_PERCENTILE_METHOD = "empirical_nearest_rank"
+_LATENCY_PERCENTILE_METHOD = "empirical_nearest_rank_successful_requests"
 
 
 @dataclass(frozen=True)
@@ -71,9 +71,10 @@ class SegmentEvidence:
     success_count: int
     failure_count: int
     error_rate: float
-    latency_p50_ms: int
-    latency_p95_ms: int
-    latency_p99_ms: int
+    latency_sample_count: int
+    latency_p50_ms: int | None
+    latency_p95_ms: int | None
+    latency_p99_ms: int | None
     provider_attempt_count: int
     provider_retry_count: int
     execution_path_divergence_count: int
@@ -206,10 +207,14 @@ def _summarize_segment(
     routes_by_id: dict[str, RouteTrace],
 ) -> SegmentEvidence:
     traces = [traces_by_id[request_id] for request_id in request_ids]
-    segment_routes = [routes_by_id[request_id] for request_id in request_ids if request_id in routes_by_id]
+    segment_routes = [
+        routes_by_id[request_id]
+        for request_id in request_ids
+        if request_id in routes_by_id
+    ]
     success_traces = [trace for trace in traces if trace.error_type is None]
     failure_count = len(traces) - len(success_traces)
-    latencies = [trace.latency_ms for trace in traces]
+    successful_latencies = [trace.latency_ms for trace in success_traces]
 
     cost_evidence_complete = all(
         trace.cost_evidence_complete and trace.estimated_cost_usd is not None for trace in traces
@@ -255,9 +260,22 @@ def _summarize_segment(
         success_count=len(success_traces),
         failure_count=failure_count,
         error_rate=failure_count / len(traces),
-        latency_p50_ms=empirical_nearest_rank(latencies, 50),
-        latency_p95_ms=empirical_nearest_rank(latencies, 95),
-        latency_p99_ms=empirical_nearest_rank(latencies, 99),
+        latency_sample_count=len(successful_latencies),
+        latency_p50_ms=(
+            empirical_nearest_rank(successful_latencies, 50)
+            if successful_latencies
+            else None
+        ),
+        latency_p95_ms=(
+            empirical_nearest_rank(successful_latencies, 95)
+            if successful_latencies
+            else None
+        ),
+        latency_p99_ms=(
+            empirical_nearest_rank(successful_latencies, 99)
+            if successful_latencies
+            else None
+        ),
         provider_attempt_count=sum(trace.provider_attempt_count for trace in traces),
         provider_retry_count=sum(trace.provider_retry_count for trace in traces),
         execution_path_divergence_count=reconciliation.execution_path_divergence_count,
