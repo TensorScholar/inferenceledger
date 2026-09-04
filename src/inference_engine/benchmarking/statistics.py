@@ -243,7 +243,7 @@ def _adjusted_probability(
     denominator = 1 - acceleration * shifted
     if abs(denominator) < 1e-15:
         return nominal_probability
-    return normal.cdf(bias_correction + shifted / denominator)
+    return float(normal.cdf(bias_correction + shifted / denominator))
 
 
 def _linear_quantile(ordered: list[float], probability: float) -> float:
