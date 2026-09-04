@@ -177,15 +177,15 @@ def test_provider_migration_is_pairable_by_workload_identity_not_request_uuid_or
 
 def test_bootstrap_evidence_is_independent_of_opaque_run_ids() -> None:
     baseline_contexts, candidate_contexts, baseline_traces, candidate_traces = _paired_data()
-    kwargs = dict(
-        baseline_report=_report(request_count=30, provider="openai"),
-        candidate_report=_report(request_count=30, provider="openai"),
-        baseline_contexts=baseline_contexts,
-        candidate_contexts=candidate_contexts,
-        baseline_traces=baseline_traces,
-        candidate_traces=candidate_traces,
-        bootstrap_config=_config(),
-    )
+    kwargs = {
+        "baseline_report": _report(request_count=30, provider="openai"),
+        "candidate_report": _report(request_count=30, provider="openai"),
+        "baseline_contexts": baseline_contexts,
+        "candidate_contexts": candidate_contexts,
+        "baseline_traces": baseline_traces,
+        "candidate_traces": candidate_traces,
+        "bootstrap_config": _config(),
+    }
 
     first = compare_paired_runs(
         baseline_run_id="run-one",
