@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+import json
+from dataclasses import asdict, dataclass, replace
 from hashlib import sha256
+from pathlib import Path
 from typing import Callable
 
 from ..infrastructure.telemetry.request_log import RequestTrace
@@ -12,6 +14,8 @@ from .statistics import (
     PairedMeanDifferenceEstimate,
     paired_mean_difference_bca,
 )
+
+_MINIMUM_BINARY_DISCORDANT_PAIRS = 10
 
 
 @dataclass(frozen=True)
@@ -66,6 +70,12 @@ class PairedRunStatisticalEvidence:
     limitations: tuple[str, ...]
 
 
+def write_paired_run_evidence(evidence: PairedRunStatisticalEvidence, path: Path) -> None:
+    """Persist a deterministic JSON evidence artifact."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(asdict(evidence), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 @dataclass(frozen=True)
 class _PairedObservation:
     workload_item_id: str
@@ -86,11 +96,11 @@ def compare_paired_runs(
     candidate_traces: list[RequestTrace],
     bootstrap_config: PairedBootstrapConfig | None = None,
 ) -> PairedRunStatisticalEvidence:
-    """Compare two runs by immutable workload item identity, never by request UUID/order.
+    """Compare two runs by immutable workload item identity, never UUID or list position.
 
-    Provider identity is deliberately allowed to differ so the evidence can evaluate provider or
-    model migrations. Workload identity is strict: the workload hash, workload item set, and tags
-    must match before any paired statistical claim is produced.
+    Provider identity may differ so model/provider migrations remain valid use cases. Workload
+    identity is strict: hash, item set, tags, report cardinality, and context/trace coverage must
+    agree before any paired statistical claim is produced.
     """
     config = bootstrap_config or PairedBootstrapConfig()
     unavailable = _validate_workload_identity(
@@ -114,11 +124,13 @@ def compare_paired_runs(
         baseline_traces=baseline_traces,
         candidate_traces=candidate_traces,
     )
+    workload_sha = baseline_report.workload_sha256
+    assert workload_sha is not None
     overall = _metric_bundle(
         observations=observations,
         scope="all",
         config=config,
-        seed_namespace=f"{baseline_run_id}|{candidate_run_id}|all",
+        seed_namespace=f"{workload_sha}|all",
     )
 
     segment_members: dict[SegmentKey, list[_PairedObservation]] = {}
@@ -135,8 +147,7 @@ def compare_paired_runs(
                 scope=f"segment:{segment_key.tag_key}={segment_key.tag_value}",
                 config=config,
                 seed_namespace=(
-                    f"{baseline_run_id}|{candidate_run_id}|"
-                    f"{segment_key.tag_key}={segment_key.tag_value}"
+                    f"{workload_sha}|{segment_key.tag_key}={segment_key.tag_value}"
                 ),
             ),
         )
@@ -145,17 +156,19 @@ def compare_paired_runs(
 
     limitations = (
         "Intervals are candidate-minus-baseline central mean-difference uncertainty estimates under empirical workload-item resampling; they are not production guarantees.",
-        "Successful-latency evidence is conditioned on the workload items that succeeded in both runs; failure-rate evidence must be interpreted alongside it.",
-        "Accepted-outcome evidence is emitted only where request-level acceptance can be determined in both runs; incomplete quality evidence reduces its coverage.",
-        "High-tail latency inference (including p95/p99 confidence intervals) is intentionally not produced by this central paired bootstrap primitive.",
-        "Configured minimum sample count is a conservative product policy, not a universal statistical power guarantee.",
+        "Successful-latency evidence is conditioned on workload items that succeeded in both runs; failure-rate evidence must be interpreted alongside it.",
+        "Accepted-outcome evidence is emitted only where request-level acceptance is determinable in both runs; incomplete quality evidence reduces pair coverage.",
+        "Failure-rate and accepted-outcome intervals use paired BCa risk-difference approximation and require at least 10 discordant pairs; they are not exact McNemar-compatible intervals.",
+        "Samples with zero empirical paired-difference variance retain the observed effect but suppress confidence intervals rather than claiming degenerate certainty.",
+        "High-tail latency inference, including p95/p99 confidence intervals, is intentionally not produced by this central paired bootstrap primitive.",
+        "Configured sample and discordant-pair floors are conservative product policies, not universal statistical power guarantees.",
     )
     return PairedRunStatisticalEvidence(
         available=True,
         unavailable_reason=None,
         baseline_run_id=baseline_run_id,
         candidate_run_id=candidate_run_id,
-        workload_sha256=baseline_report.workload_sha256,
+        workload_sha256=workload_sha,
         workload_item_count=len(observations),
         baseline_provider=baseline_report.provider,
         candidate_provider=candidate_report.provider,
@@ -184,6 +197,16 @@ def _validate_workload_identity(
         return "baseline and candidate workload SHA256 values differ"
     if not baseline_contexts or not candidate_contexts:
         return "paired inference requires benchmark request context for both runs"
+    if baseline_report.request_count != len(baseline_contexts):
+        return (
+            "baseline report request_count does not match benchmark context cardinality; "
+            f"report={baseline_report.request_count}, contexts={len(baseline_contexts)}"
+        )
+    if candidate_report.request_count != len(candidate_contexts):
+        return (
+            "candidate report request_count does not match benchmark context cardinality; "
+            f"report={candidate_report.request_count}, contexts={len(candidate_contexts)}"
+        )
 
     baseline_by_item = _contexts_by_workload_item(baseline_contexts, kind="baseline")
     candidate_by_item = _contexts_by_workload_item(candidate_contexts, kind="candidate")
@@ -269,6 +292,7 @@ def _metric_bundle(
             ),
             config=config,
             seed_namespace=seed_namespace,
+            minimum_changed_pairs=_MINIMUM_BINARY_DISCORDANT_PAIRS,
         ),
         "successful_latency_ms": _metric_evidence(
             observations=observations,
@@ -289,6 +313,7 @@ def _metric_bundle(
             values=_accepted_outcome_values,
             config=config,
             seed_namespace=seed_namespace,
+            minimum_changed_pairs=_MINIMUM_BINARY_DISCORDANT_PAIRS,
         ),
         "provider_attempt_count": _metric_evidence(
             observations=observations,
@@ -329,6 +354,7 @@ def _metric_evidence(
     values: Callable[[_PairedObservation], tuple[float, float] | None],
     config: PairedBootstrapConfig,
     seed_namespace: str,
+    minimum_changed_pairs: int = 0,
 ) -> PairedMetricEvidence:
     baseline: list[float] = []
     candidate: list[float] = []
@@ -342,6 +368,7 @@ def _metric_evidence(
 
     metric_config = replace(
         config,
+        minimum_changed_pairs=max(config.minimum_changed_pairs, minimum_changed_pairs),
         seed=_derived_seed(config.seed, f"{seed_namespace}|{metric}"),
     )
     estimate = paired_mean_difference_bca(
