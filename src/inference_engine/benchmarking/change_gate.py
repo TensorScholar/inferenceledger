@@ -48,11 +48,11 @@ class CriticalSegmentPolicy:
             raise ValueError("critical segment tag key/value must be non-empty")
         if self.minimum_tail_latency_samples < 1:
             raise ValueError("minimum_tail_latency_samples must be positive")
-        for field_name, value in (
+        for field_name, tail_value in (
             ("max_candidate_p95_ms", self.max_candidate_p95_ms),
             ("max_candidate_p99_ms", self.max_candidate_p99_ms),
         ):
-            if value is not None and value < 0:
+            if tail_value is not None and tail_value < 0:
                 raise ValueError(f"{field_name} must be non-negative")
 
 
@@ -81,19 +81,19 @@ class ChangeGatePolicy:
     require_tail_latency_inference: bool = False
 
     def __post_init__(self) -> None:
-        for field_name, value in (
+        for field_name, numeric_value in (
             ("max_mean_cost_delta_usd", self.max_mean_cost_delta_usd),
             ("max_mean_successful_latency_delta_ms", self.max_mean_successful_latency_delta_ms),
         ):
-            if not isfinite(value):
+            if not isfinite(numeric_value):
                 raise ValueError(f"{field_name} must be finite")
-        for field_name, value in (
+        for field_name, optional_value in (
             ("max_mean_provider_attempt_delta", self.max_mean_provider_attempt_delta),
             ("max_mean_provider_retry_delta", self.max_mean_provider_retry_delta),
         ):
-            if value is not None and not isfinite(value):
+            if optional_value is not None and not isfinite(optional_value):
                 raise ValueError(f"{field_name} must be finite when configured")
-        for field_name, value in (
+        for field_name, bounded_value in (
             ("max_failure_harm_rate", self.max_failure_harm_rate),
             ("max_accepted_outcome_harm_rate", self.max_accepted_outcome_harm_rate),
             ("minimum_cost_pair_coverage", self.minimum_cost_pair_coverage),
@@ -105,7 +105,7 @@ class ChangeGatePolicy:
             ("minimum_accepted_outcome_pair_coverage", self.minimum_accepted_outcome_pair_coverage),
             ("minimum_operational_pair_coverage", self.minimum_operational_pair_coverage),
         ):
-            if not 0 <= value <= 1:
+            if not 0 <= bounded_value <= 1:
                 raise ValueError(f"{field_name} must be between 0 and 1")
         if not 0 < self.confidence_level < 1:
             raise ValueError("confidence_level must be between 0 and 1")
